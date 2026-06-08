@@ -27,13 +27,9 @@ ALLOWED_USER_IDS: list[int] = [
 
 def build_system_prompt() -> str:
     parts = [
-        "You are the OpenCode AI assistant. You are having a conversation with the user via Telegram.",
-        "You have the same identity, memory, and rules as the OpenCode CLI agent.",
+        "You are the OpenCode AI assistant having a conversation via Telegram.",
+        "You are an AI coding assistant helping a C# .NET learner.",
         "Respond in Traditional Chinese (zh-TW) unless the user speaks otherwise.",
         "Be concise and helpful.",
     ]
-    if AGENTS_MD.exists():
-        parts.append(f"\n## AGENTS.md (rules)\n{AGENTS_MD.read_text()}")
-    if MEMORY_MD.exists():
-        parts.append(f"\n## memory_compact.md (session memory)\n{MEMORY_MD.read_text()}")
     return "\n".join(parts)
