@@ -5,7 +5,7 @@ from telegram import Update
 from telegram.ext import ContextTypes
 
 from bot.config import ALLOWED_USER_IDS
-from bot.openrouter import chat, tts
+from bot.opencode_client import chat, tts
 from bot.whisper import transcribe
 
 logger = logging.getLogger(__name__)
@@ -30,7 +30,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     text = update.message.text
     await update.message.reply_text("Thinking...")
     try:
-        reply_text = await chat([{"role": "user", "content": text}])
+        reply_text = await chat(update.effective_chat.id, text)
     except Exception as e:
         logger.exception("LLM failed")
         await update.message.reply_text(f"AI response failed: {e}")
@@ -76,7 +76,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
     await update.message.reply_text(f"You: {text}\n\nThinking...")
     try:
-        reply_text = await chat([{"role": "user", "content": text}])
+        reply_text = await chat(update.effective_chat.id, text)
     except Exception as e:
         logger.exception("LLM failed")
         await update.message.reply_text(f"AI response failed: {e}")
