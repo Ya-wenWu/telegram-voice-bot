@@ -43,11 +43,17 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         logger.exception("TTS failed")
         return
 
-    await update.message.reply_audio(
-        io.BytesIO(speech),
-        filename="reply.mp3",
-        title="AI Voice Reply",
-    )
+    try:
+        await update.message.reply_audio(
+            io.BytesIO(speech),
+            filename="reply.mp3",
+            title="AI Voice Reply",
+            read_timeout=60,
+            write_timeout=60,
+        )
+    except Exception as e:
+        logger.exception("Audio reply failed")
+        await update.message.reply_text(f"Voice reply failed: {e}")
 
 
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -84,8 +90,13 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await update.message.reply_text(f"TTS failed: {e}")
         return
 
-    await update.message.reply_audio(
-        io.BytesIO(speech),
-        filename="reply.mp3",
-        title="AI Voice Reply",
-    )
+    try:
+        await update.message.reply_audio(
+            io.BytesIO(speech),
+            filename="reply.mp3",
+            title="AI Voice Reply",
+            read_timeout=60,
+            write_timeout=60,
+        )
+    except Exception as e:
+        logger.exception("Audio reply failed")
