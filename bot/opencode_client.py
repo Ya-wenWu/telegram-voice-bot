@@ -60,6 +60,13 @@ async def chat(chat_id: int, text: str) -> str:
         f"{OPCODE_BASE}/session/{sid}/message",
         json=body,
     )
+    if resp.status_code == 404:
+        _sessions.pop(chat_id, None)
+        sid = await _get_or_create_session(chat_id)
+        resp = await client.post(
+            f"{OPCODE_BASE}/session/{sid}/message",
+            json=body,
+        )
     resp.raise_for_status()
     data = resp.json()
     parts = data.get("parts", [])
