@@ -5,7 +5,6 @@ from telegram import Update
 from telegram.ext import ContextTypes
 
 from bot.config import ALLOWED_USER_IDS
-from bot.opencode_client import chat, tts
 from bot.whisper import transcribe
 from bot.worker import Task, WorkerPool
 
@@ -30,7 +29,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if not _is_allowed(user.id):
         return
 
-    # Enqueue immediately — streaming handled by worker
     await worker_pool.enqueue(
         Task(
             chat_id=update.effective_chat.id,
@@ -53,20 +51,14 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
     msg = await update.message.reply_text("⏳ Transcribing...")
 
-    # Run transcription in thread pool to avoid blocking event loop
-    import asyncio
-    loop = asyncio.get_running_loop()
     try:
-        text = await loop.run_in_executor(
-            None, lambda: _transcribe_sync(audio_bytes.getvalue())
-        )
+        text = await transcribe(audio_bytes.getvalue())
     except Exception as e:
         logger.exception("Whisper failed")
         await msg.edit_text(f"❌ Transcription failed: {e}")
         return
 
-    await msg.edit_text(f"You: {text}\n\n⏳ Processing...")
-
+    await msg.edit_text(f"You: {text}\n\n⏳ Thinking...")
     await worker_pool.enqueue(
         Task(
             chat_id=update.effective_chat.id,
@@ -76,20 +68,3 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             is_voice=True,
         )
     )
-
-
-def _transcribe_sync(audio_bytes: bytes) -> str:
-    """Synchronous transcription wrapper for run_in_executor."""
-    import httpx
-    from bot.config import WHISPER_URL
-
-    with httpx.Client(timeout=120) as client:
-        files = {"file": ("audio.ogg", audio_bytes, "audio/ogg")}
-        data = {"model": "base", "language": "zh", "response_format": "json"}
-        resp = client.post(
-            f"{WHISPER_URL}/v1/audio/transcriptions",
-            files=files,
-            data=data,
-        )
-        resp.raise_for_status()
-        return resp.json()["text"]

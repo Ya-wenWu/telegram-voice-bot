@@ -1,21 +1,20 @@
 import asyncio
 import io
 import logging
-import time
 from dataclasses import dataclass, field
 
 from telegram import Bot
 
-from bot.opencode_client import chat_stream, tts
+from bot.opencode_client import chat, tts
 
 logger = logging.getLogger(__name__)
 
-# Streaming throttle: minimum seconds between editMessageText calls
-MIN_EDIT_INTERVAL = 0.8
 # Telegram max message length
 MAX_MSG_LEN = 4096
-# Typing indicator refresh interval (seconds)
+# Typing indicator refresh interval
 TYPING_REFRESH_INTERVAL = 4.0
+# Progress animation interval
+PROGRESS_INTERVAL = 8.0
 
 
 @dataclass
@@ -28,7 +27,7 @@ class Task:
 
 
 async def _typing_loop(bot: Bot, chat_id: int, stop_event: asyncio.Event) -> None:
-    """Refresh 'typing...' indicator every 4 seconds until stop_event is set."""
+    """Refresh typing indicator every 4s until stop_event is set."""
     while not stop_event.is_set():
         try:
             await bot.send_chat_action(chat_id=chat_id, action="typing")
@@ -36,6 +35,28 @@ async def _typing_loop(bot: Bot, chat_id: int, stop_event: asyncio.Event) -> Non
             pass
         try:
             await asyncio.wait_for(stop_event.wait(), timeout=TYPING_REFRESH_INTERVAL)
+        except asyncio.TimeoutError:
+            pass
+
+
+async def _progress_animation(
+    bot: Bot, chat_id: int, msg_id: int, stop_event: asyncio.Event
+) -> None:
+    """Update placeholder message periodically to show the bot is alive."""
+    frames = ["⏳ Thinking", "⏳ Thinking.", "⏳ Thinking..", "⏳ Thinking..."]
+    idx = 0
+    while not stop_event.is_set():
+        try:
+            await bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=msg_id,
+                text=frames[idx % len(frames)],
+            )
+        except Exception:
+            pass
+        idx += 1
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=PROGRESS_INTERVAL)
         except asyncio.TimeoutError:
             pass
 
@@ -111,72 +132,45 @@ class WorkerPool:
 
     async def _process(self, task: Task) -> None:
         chat_id = task.chat_id
-        stop_typing = asyncio.Event()
+        stop_event = asyncio.Event()
 
-        # Start typing indicator refresh in background
+        # Send placeholder immediately
+        placeholder = await task.bot.send_message(
+            chat_id=chat_id,
+            text="⏳ Thinking",
+            reply_to_message_id=task.reply_to_message_id,
+        )
+        msg_id = placeholder.message_id
+
+        # Start background tasks: typing indicator + progress animation
         typing_task = asyncio.create_task(
-            _typing_loop(task.bot, chat_id, stop_typing)
+            _typing_loop(task.bot, chat_id, stop_event)
+        )
+        progress_task = asyncio.create_task(
+            _progress_animation(task.bot, chat_id, msg_id, stop_event)
         )
 
         try:
-            # Stream LLM response — show progressive updates
-            placeholder = await task.bot.send_message(
-                chat_id=chat_id,
-                text="⏳ Thinking...",
-                reply_to_message_id=task.reply_to_message_id,
-            )
-            msg_id = placeholder.message_id
+            # Call LLM (blocking I/O via asyncio — doesn't block event loop)
+            reply_text = await chat(chat_id, task.text)
 
-            accumulated = ""
-            last_edit_time = 0.0
-            stream_started = False
-
-            async for token in chat_stream(chat_id, task.text):
-                if not stream_started:
-                    stream_started = True
-                    # Clear placeholder on first real token
-                    accumulated = token
-                    last_edit_time = time.time()
-                    try:
-                        await task.bot.edit_message_text(
-                            chat_id=chat_id,
-                            message_id=msg_id,
-                            text=accumulated[:MAX_MSG_LEN],
-                        )
-                    except Exception:
-                        pass
-                    continue
-
-                accumulated += token
-                now = time.time()
-
-                # Throttle edits to avoid Telegram rate limits
-                if now - last_edit_time >= MIN_EDIT_INTERVAL:
-                    try:
-                        await task.bot.edit_message_text(
-                            chat_id=chat_id,
-                            message_id=msg_id,
-                            text=accumulated[:MAX_MSG_LEN],
-                        )
-                        last_edit_time = now
-                    except Exception:
-                        pass
-
-            # Final edit with complete response
-            if accumulated:
-                try:
-                    await task.bot.edit_message_text(
-                        chat_id=chat_id,
-                        message_id=msg_id,
-                        text=accumulated[:MAX_MSG_LEN],
-                    )
-                except Exception:
-                    pass
+            # Replace placeholder with actual response
+            try:
+                await task.bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=msg_id,
+                    text=reply_text[:MAX_MSG_LEN],
+                )
+            except Exception:
+                await task.bot.send_message(
+                    chat_id=chat_id,
+                    text=reply_text[:MAX_MSG_LEN],
+                    reply_to_message_id=task.reply_to_message_id,
+                )
 
             # Send remaining chunks if response > 4096 chars
-            if len(accumulated) > MAX_MSG_LEN:
-                remaining = accumulated[MAX_MSG_LEN:]
-                for chunk in _split_message(remaining, MAX_MSG_LEN):
+            if len(reply_text) > MAX_MSG_LEN:
+                for chunk in _split_message(reply_text[MAX_MSG_LEN:], MAX_MSG_LEN):
                     try:
                         await task.bot.send_message(
                             chat_id=chat_id,
@@ -186,20 +180,22 @@ class WorkerPool:
                     except Exception:
                         pass
 
-            # Step 2 — generate TTS in background (non-blocking)
-            if accumulated:
+            # Fire TTS in background — don't block the next message
+            if reply_text:
                 asyncio.create_task(
-                    self._send_tts(task.bot, chat_id, accumulated, task.reply_to_message_id)
+                    self._send_tts(
+                        task.bot, chat_id, reply_text, task.reply_to_message_id
+                    )
                 )
 
         except Exception as e:
-            logger.exception("Worker failed processing streaming task")
+            logger.exception("Worker failed processing task")
             await self._safe_send(
-                task.bot, chat_id, f"❌ Processing error: {e}", task.reply_to_message_id
+                task.bot, chat_id, f"❌ Error: {e}", task.reply_to_message_id
             )
         finally:
-            stop_typing.set()
-            await typing_task
+            stop_event.set()
+            await asyncio.gather(typing_task, progress_task, return_exceptions=True)
 
     async def _send_tts(
         self, bot: Bot, chat_id: int, text: str, reply_to_message_id: int

@@ -1,7 +1,4 @@
-import asyncio
-import json
 import logging
-import time
 
 import httpx
 
@@ -68,49 +65,6 @@ async def chat(chat_id: int, text: str) -> str:
     parts = data.get("parts", [])
     texts = [p["text"] for p in parts if p.get("type") == "text"]
     return "\n".join(texts)
-
-
-async def chat_stream(chat_id: int, text: str):
-    """Stream LLM response token by token via SSE."""
-    sid = await _get_or_create_session(chat_id)
-    body = {
-        "parts": [{"type": "text", "text": text}],
-        "noReply": False,
-    }
-    client = _get_client()
-    async with client.stream(
-        "POST",
-        f"{OPCODE_BASE}/session/{sid}/message",
-        json=body,
-    ) as resp:
-        resp.raise_for_status()
-        async for line in resp.aiter_lines():
-            if not line:
-                continue
-            if line.startswith("data: "):
-                payload = line[6:]
-                if payload == "[DONE]":
-                    break
-                try:
-                    chunk = json.loads(payload)
-                    # Handle OpenAI-compatible streaming format
-                    if "choices" in chunk:
-                        delta = chunk["choices"][0].get("delta", {})
-                        content = delta.get("content", "")
-                        if content:
-                            yield content
-                    # Handle OpenCode native format
-                    elif "parts" in chunk:
-                        for p in chunk["parts"]:
-                            if p.get("type") == "text" and p.get("text"):
-                                yield p["text"]
-                    # Handle plain text chunks
-                    elif "text" in chunk:
-                        yield chunk["text"]
-                except json.JSONDecodeError:
-                    # If it's not JSON, yield as-is (plain text streaming)
-                    if payload:
-                        yield payload
 
 
 async def tts(text: str) -> bytes:
