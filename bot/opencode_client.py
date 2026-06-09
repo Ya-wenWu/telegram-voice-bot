@@ -10,7 +10,7 @@ _sessions: dict[int, str] = {}
 async def _get_or_create_session(chat_id: int) -> str:
     if chat_id in _sessions:
         return _sessions[chat_id]
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(timeout=120) as client:
         resp = await client.post(
             f"{OPCODE_BASE}/session",
             json={"title": f"telegram-{chat_id}"},
