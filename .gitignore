@@ -4,3 +4,5 @@ __pycache__/
 .venv/
 *.ogg
 *.mp3
+.pytest_cache/
+tests/__pycache__/

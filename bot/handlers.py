@@ -7,8 +7,11 @@ from telegram.ext import ContextTypes
 from bot.config import ALLOWED_USER_IDS
 from bot.opencode_client import chat, tts
 from bot.whisper import transcribe
+from bot.worker import Task, WorkerPool
 
 logger = logging.getLogger(__name__)
+
+worker_pool: WorkerPool | None = None
 
 
 def _is_allowed(user_id: int) -> bool:
@@ -27,33 +30,15 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if not _is_allowed(user.id):
         return
 
-    text = update.message.text
-    await update.message.reply_text("Thinking...")
-    try:
-        reply_text = await chat(update.effective_chat.id, text)
-    except Exception as e:
-        logger.exception("LLM failed")
-        await update.message.reply_text(f"AI response failed: {e}")
-        return
-
-    await update.message.reply_text(reply_text)
-    try:
-        speech = await tts(reply_text)
-    except Exception as e:
-        logger.exception("TTS failed")
-        return
-
-    try:
-        await update.message.reply_audio(
-            io.BytesIO(speech),
-            filename="reply.mp3",
-            title="AI Voice Reply",
-            read_timeout=60,
-            write_timeout=60,
+    # Enqueue immediately — streaming handled by worker
+    await worker_pool.enqueue(
+        Task(
+            chat_id=update.effective_chat.id,
+            reply_to_message_id=update.message.message_id,
+            text=update.message.text,
+            bot=context.bot,
         )
-    except Exception as e:
-        logger.exception("Audio reply failed")
-        await update.message.reply_text(f"Voice reply failed: {e}")
+    )
 
 
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -66,37 +51,45 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     audio_bytes = io.BytesIO()
     await file.download_to_memory(audio_bytes)
 
-    await update.message.reply_text("Transcribing...")
-    try:
-        text = await transcribe(audio_bytes.getvalue())
-    except Exception as e:
-        logger.exception("Whisper failed")
-        await update.message.reply_text(f"Transcription failed: {e}")
-        return
+    msg = await update.message.reply_text("⏳ Transcribing...")
 
-    await update.message.reply_text(f"You: {text}\n\nThinking...")
+    # Run transcription in thread pool to avoid blocking event loop
+    import asyncio
+    loop = asyncio.get_running_loop()
     try:
-        reply_text = await chat(update.effective_chat.id, text)
-    except Exception as e:
-        logger.exception("LLM failed")
-        await update.message.reply_text(f"AI response failed: {e}")
-        return
-
-    await update.message.reply_text(f"AI: {reply_text}\n\nGenerating voice...")
-    try:
-        speech = await tts(reply_text)
-    except Exception as e:
-        logger.exception("TTS failed")
-        await update.message.reply_text(f"TTS failed: {e}")
-        return
-
-    try:
-        await update.message.reply_audio(
-            io.BytesIO(speech),
-            filename="reply.mp3",
-            title="AI Voice Reply",
-            read_timeout=60,
-            write_timeout=60,
+        text = await loop.run_in_executor(
+            None, lambda: _transcribe_sync(audio_bytes.getvalue())
         )
     except Exception as e:
-        logger.exception("Audio reply failed")
+        logger.exception("Whisper failed")
+        await msg.edit_text(f"❌ Transcription failed: {e}")
+        return
+
+    await msg.edit_text(f"You: {text}\n\n⏳ Processing...")
+
+    await worker_pool.enqueue(
+        Task(
+            chat_id=update.effective_chat.id,
+            reply_to_message_id=update.message.message_id,
+            text=text,
+            bot=context.bot,
+            is_voice=True,
+        )
+    )
+
+
+def _transcribe_sync(audio_bytes: bytes) -> str:
+    """Synchronous transcription wrapper for run_in_executor."""
+    import httpx
+    from bot.config import WHISPER_URL
+
+    with httpx.Client(timeout=120) as client:
+        files = {"file": ("audio.ogg", audio_bytes, "audio/ogg")}
+        data = {"model": "base", "language": "zh", "response_format": "json"}
+        resp = client.post(
+            f"{WHISPER_URL}/v1/audio/transcriptions",
+            files=files,
+            data=data,
+        )
+        resp.raise_for_status()
+        return resp.json()["text"]
