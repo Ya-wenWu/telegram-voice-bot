@@ -157,6 +157,9 @@ def main():
         review = call_gemini_api(api_key, diff, filename)
         print(review)
     except httpx.HTTPStatusError as e:
+        if e.response.status_code == 429:
+            print("⚠️ Gemini API rate limit exceeded. Skipping AI review this time.")
+            return
         print(f"❌ Gemini API error: {e.response.status_code} {e.response.text}", file=sys.stderr)
         sys.exit(1)
     except httpx.RequestError as e:
