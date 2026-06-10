@@ -131,8 +131,8 @@ Provide a thorough code review following the checklist above."""
 def main():
     api_key = os.environ.get("GOOGLE_API_KEY")
     if not api_key:
-        print("❌ GOOGLE_API_KEY environment variable not set", file=sys.stderr)
-        sys.exit(1)
+        print("⚠️ GOOGLE_API_KEY not available (fork PR from external contributor). Skipping AI review.")
+        return
 
     if len(sys.argv) < 2:
         print("Usage: code_review.py <diff_file> [filename_pattern]", file=sys.stderr)

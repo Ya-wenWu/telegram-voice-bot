@@ -8,6 +8,7 @@ on:
 
 permissions:
   contents: read
+  pull-requests: read
   security-events: write
 
 jobs:
@@ -25,8 +26,15 @@ jobs:
 
       - name: Dependency audit
         run: |
-          pip install pip-audit
+          pip install pip-audit==2.7.3
           pip-audit --strict 2>&1 || true
+
+  dependency-review:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/dependency-review-action@v4
 
   build:
     needs: security
@@ -52,7 +60,7 @@ jobs:
 
       - name: Type check
         run: |
-          pip install mypy
+          pip install mypy==1.11.2
           mypy src/ --strict || true
 
       - name: Test
