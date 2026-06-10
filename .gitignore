@@ -1,8 +1,36 @@
-.env
-__pycache__/
-*.pyc
-.venv/
-*.ogg
+
+# Build
+# Environment
+# IDE
+# OS
+# Python
+# Testing
+*.egg
+*.egg-info/
+*.log
 *.mp3
+*.ogg
+*.py[cod]
+*.pyc
+*.swo
+*.swp
+*.tar.gz
+*.whl
+*~
+.DS_Store
+.coverage
+.coverage.*
+.env
+.env.*.local
+.env.local
+.idea/
 .pytest_cache/
+.venv/
+.vscode/
+Thumbs.db
+__pycache__/
+build/
+dist/
+htmlcov/
 tests/__pycache__/
+venv/
