@@ -37,9 +37,12 @@ jobs:
         env:
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
         run: |
-          python .github/scripts/code_review.py /tmp/pr_diff.txt "${{ github.event.pull_request.title }}" > /tmp/review_output.md 2>&1
-          echo "Review output written ($(wc -c < /tmp/review_output.md) bytes)"
+          python .github/scripts/code_review.py /tmp/pr_diff.txt "${{ github.event.pull_request.title }}" > /tmp/review_output.md 2>&1 || ec=$?
+          echo "Review exit code: ${ec:-0}"
+          echo "Review output ($(wc -c < /tmp/review_output.md) bytes):"
+          head -c 2000 /tmp/review_output.md
           echo "review_output=/tmp/review_output.md" >> "$GITHUB_ENV"
+          exit ${ec:-0}
 
       - name: Post review comment
         uses: actions/github-script@v7
