@@ -22,7 +22,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install dependencies
-        run: pip install httpx
+        run: pip install httpx==0.27.2
 
       - name: Generate diff
         env:
