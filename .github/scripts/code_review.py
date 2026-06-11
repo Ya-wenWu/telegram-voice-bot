@@ -3,10 +3,11 @@ Reads a PR diff, sends it to Gemini API for review, outputs structured feedback.
 
 import os
 import sys
-import json
+
 import httpx
 
-SYSTEM_PROMPT = """You are a Staff Software Engineer conducting a code review at Google engineering standards.
+SYSTEM_PROMPT = """You are a Staff Software Engineer conducting a code review \
+at Google engineering standards.
 
 ## Review Checklist
 
@@ -131,7 +132,10 @@ Provide a thorough code review following the checklist above."""
 def main():
     api_key = os.environ.get("GOOGLE_API_KEY")
     if not api_key:
-        print("⚠️ GOOGLE_API_KEY not available (fork PR from external contributor). Skipping AI review.")
+        print(
+            "⚠️ GOOGLE_API_KEY not available "
+            "(fork PR from external contributor). Skipping AI review."
+        )
         return
 
     if len(sys.argv) < 2:
