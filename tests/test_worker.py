@@ -64,8 +64,6 @@ async def test_worker_pool_processes_multiple_tasks_concurrently(mock_bot):
     progress = []
     lock = asyncio.Lock()
 
-    original_process = pool._process
-
     async def slow_process(task):
         async with lock:
             progress.append(f"start:{task.text}")
