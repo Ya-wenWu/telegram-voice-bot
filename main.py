@@ -1,7 +1,5 @@
-import asyncio
 import logging
 import os
-import signal
 import sys
 
 from telegram import Update
