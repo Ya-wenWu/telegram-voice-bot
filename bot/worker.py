@@ -180,7 +180,7 @@ class WorkerPool:
                 logger.exception("Worker %d failed processing task", idx)
                 await self._safe_send(
                     task.bot, task.chat_id,
-                    f"❌ Processing error: {e}",
+                    f"❌ Processing error ({type(e).__name__}): {e}",
                     task.reply_to_message_id,
                 )
             finally:
@@ -216,8 +216,8 @@ class WorkerPool:
                             message_id=msg_id,
                             text=full_text[:MAX_MSG_LEN],
                         )
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug("edit_message_text during streaming: %s: %s", type(e).__name__, e)
                     if task.is_voice:
                         pos, new = _scan_sentences(full_text, pos)
                         for s in new:
@@ -239,8 +239,8 @@ class WorkerPool:
                             chat_id=chat_id, message_id=msg_id,
                             text=full_text[:MAX_MSG_LEN],
                         )
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug("edit_message_text after non-streaming: %s: %s", type(e).__name__, e)
                     if task.is_voice:
                         pos, new = _scan_sentences(full_text, pos)
                         for s in new:
@@ -252,8 +252,8 @@ class WorkerPool:
                 for t in tts_tasks:
                     try:
                         tts_parts.append(await t)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.warning("TTS task failed: %s: %s", type(e).__name__, e)
                 if tts_parts:
                     combined = await _concat_mp3(tts_parts)
                     await task.bot.send_audio(
@@ -272,7 +272,7 @@ class WorkerPool:
         except Exception as e:
             logger.exception("Worker failed processing task")
             await self._safe_send(
-                task.bot, chat_id, f"❌ Error: {e}", task.reply_to_message_id
+                task.bot, chat_id, f"❌ Error ({type(e).__name__}): {e}", task.reply_to_message_id
             )
         finally:
             stop_event.set()
@@ -286,7 +286,8 @@ class WorkerPool:
                 message_id=msg_id,
                 text=text[:MAX_MSG_LEN],
             )
-        except Exception:
+        except Exception as e:
+            logger.debug("edit_message_text for final text failed: %s: %s", type(e).__name__, e)
             await task.bot.send_message(
                 chat_id=task.chat_id,
                 text=text[:MAX_MSG_LEN],
