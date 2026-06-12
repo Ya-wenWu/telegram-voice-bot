@@ -5,6 +5,7 @@ import os
 import tempfile
 from dataclasses import dataclass
 
+import httpx
 from telegram import Bot
 
 from bot.opencode_client import chat, chat_stream, tts
@@ -204,24 +205,48 @@ class WorkerPool:
             tts_tasks: list[asyncio.Task[bytes]] = []
             pos = 0
 
-            async for token in chat_stream(chat_id, task.text):
-                full_text += token
-                # Progressive text update — every token we see
+            # Phase 1 — streaming (fast, progressive)
+            stream_ok = True
+            try:
+                async for token in chat_stream(chat_id, task.text):
+                    full_text += token
+                    try:
+                        await task.bot.edit_message_text(
+                            chat_id=chat_id,
+                            message_id=msg_id,
+                            text=full_text[:MAX_MSG_LEN],
+                        )
+                    except Exception:
+                        pass
+                    if task.is_voice:
+                        pos, new = _scan_sentences(full_text, pos)
+                        for s in new:
+                            tts_tasks.append(asyncio.create_task(tts(s)))
+            except (httpx.ReadError, httpx.TimeoutException, httpx.RemoteProtocolError):
+                logger.warning("Stream failed for chat %d, falling back to non-streaming", chat_id)
+                stream_ok = False
+
+            # Phase 2 — fallback to non-streaming if stream failed
+            if not stream_ok or not full_text:
                 try:
-                    await task.bot.edit_message_text(
-                        chat_id=chat_id,
-                        message_id=msg_id,
-                        text=full_text[:MAX_MSG_LEN],
-                    )
+                    complete = await chat(chat_id, task.text)
                 except Exception:
-                    pass
+                    complete = None
+                if complete:
+                    full_text = complete
+                    try:
+                        await task.bot.edit_message_text(
+                            chat_id=chat_id, message_id=msg_id,
+                            text=full_text[:MAX_MSG_LEN],
+                        )
+                    except Exception:
+                        pass
+                    if task.is_voice:
+                        pos, new = _scan_sentences(full_text, pos)
+                        for s in new:
+                            tts_tasks.append(asyncio.create_task(tts(s)))
 
-                if task.is_voice:
-                    pos, new = _scan_sentences(full_text, pos)
-                    for s in new:
-                        tts_tasks.append(asyncio.create_task(tts(s)))
-
-            # Voice: collect all TTS results
+            # Phase 3 — voice: collect TTS results and send audio
             if task.is_voice and tts_tasks:
                 await task.bot.send_chat_action(chat_id=chat_id, action="upload_voice")
                 for t in tts_tasks:
@@ -241,30 +266,8 @@ class WorkerPool:
                         reply_to_message_id=task.reply_to_message_id,
                     )
 
-            # Final text update (in case streaming was truncated)
-            try:
-                await task.bot.edit_message_text(
-                    chat_id=chat_id,
-                    message_id=msg_id,
-                    text=full_text[:MAX_MSG_LEN],
-                )
-            except Exception:
-                await task.bot.send_message(
-                    chat_id=chat_id,
-                    text=full_text[:MAX_MSG_LEN],
-                    reply_to_message_id=task.reply_to_message_id,
-                )
-
-            if len(full_text) > MAX_MSG_LEN:
-                for chunk in _split_message(full_text[MAX_MSG_LEN:], MAX_MSG_LEN):
-                    try:
-                        await task.bot.send_message(
-                            chat_id=chat_id,
-                            text=chunk,
-                            reply_to_message_id=task.reply_to_message_id,
-                        )
-                    except Exception:
-                        pass
+            # Phase 4 — final text delivery
+            await self._deliver_text(task, msg_id, full_text)
 
         except Exception as e:
             logger.exception("Worker failed processing task")
@@ -274,6 +277,31 @@ class WorkerPool:
         finally:
             stop_event.set()
             await asyncio.gather(typing_task, return_exceptions=True)
+
+    async def _deliver_text(self, task: Task, msg_id: int, text: str) -> None:
+        """Send or update the final text message after streaming completes."""
+        try:
+            await task.bot.edit_message_text(
+                chat_id=task.chat_id,
+                message_id=msg_id,
+                text=text[:MAX_MSG_LEN],
+            )
+        except Exception:
+            await task.bot.send_message(
+                chat_id=task.chat_id,
+                text=text[:MAX_MSG_LEN],
+                reply_to_message_id=task.reply_to_message_id,
+            )
+        if len(text) > MAX_MSG_LEN:
+            for chunk in _split_message(text[MAX_MSG_LEN:], MAX_MSG_LEN):
+                try:
+                    await task.bot.send_message(
+                        chat_id=task.chat_id,
+                        text=chunk,
+                        reply_to_message_id=task.reply_to_message_id,
+                    )
+                except Exception:
+                    pass
 
     @staticmethod
     async def _safe_send(
