@@ -176,7 +176,7 @@ class WorkerPool:
                 break
             try:
                 await self._process(task)
-            except Exception as e:
+            except Exception:
                 logger.exception("Worker %d failed processing task", idx)
                 await self._safe_send(
                     task.bot, task.chat_id,
@@ -269,7 +269,7 @@ class WorkerPool:
             # Phase 4 — final text delivery
             await self._deliver_text(task, msg_id, full_text)
 
-        except Exception as e:
+        except Exception:
             logger.exception("Worker failed processing task")
             if full_text:
                 await self._deliver_text(task, msg_id, full_text)
