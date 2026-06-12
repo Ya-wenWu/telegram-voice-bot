@@ -17,10 +17,16 @@ def _is_allowed(user_id: int) -> bool:
     return not ALLOWED_USER_IDS or user_id in ALLOWED_USER_IDS
 
 
+CHAT_ID_FILE = "/tmp/telegram-chat-id.txt"
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not _is_allowed(update.effective_user.id):
         await update.message.reply_text("Unauthorized.")
         return
+    chat_id = str(update.effective_chat.id)
+    with open(CHAT_ID_FILE, "w") as f:
+        f.write(chat_id)
     await update.message.reply_text("Send me a voice or text message and I'll reply!")
 
 

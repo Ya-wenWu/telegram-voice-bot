@@ -1,84 +1,43 @@
+import io
 import logging
 
+import edge_tts
 import httpx
 
-from bot.config import TTS_VOICE
+from bot.config import ZEN_API_BASE, ZEN_API_KEY, ZEN_MODEL, TTS_VOICE, build_system_prompt
 
 logger = logging.getLogger(__name__)
 
-OPCODE_BASE = "http://127.0.0.1:4096"
-
-_sessions: dict[int, str] = {}
-
-# Shared connection pool — ONE client per application lifetime
-_http_client: httpx.AsyncClient | None = None
-
-
-def _get_client() -> httpx.AsyncClient:
-    global _http_client
-    if _http_client is None or _http_client.is_closed:
-        _http_client = httpx.AsyncClient(
-            limits=httpx.Limits(
-                max_connections=50,
-                max_keepalive_connections=20,
-                keepalive_expiry=30,
-            ),
-            timeout=httpx.Timeout(connect=10.0, read=120.0, write=10.0, pool=5.0),
-        )
-    return _http_client
-
-
-async def close_client() -> None:
-    global _http_client
-    if _http_client and not _http_client.is_closed:
-        await _http_client.aclose()
-        _http_client = None
-
-
-async def _get_or_create_session(chat_id: int) -> str:
-    if chat_id in _sessions:
-        return _sessions[chat_id]
-    client = _get_client()
-    resp = await client.post(
-        f"{OPCODE_BASE}/session",
-        json={"title": f"telegram-{chat_id}"},
-    )
-    resp.raise_for_status()
-    sid = resp.json()["id"]
-    _sessions[chat_id] = sid
-    return sid
+HEADERS = {
+    "Authorization": f"Bearer {ZEN_API_KEY}",
+    "Content-Type": "application/json",
+}
 
 
 async def chat(chat_id: int, text: str) -> str:
-    sid = await _get_or_create_session(chat_id)
+    system_prompt = build_system_prompt()
     body = {
-        "parts": [{"type": "text", "text": text}],
-        "noReply": False,
+        "model": ZEN_MODEL,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": text},
+        ],
     }
-    client = _get_client()
-    resp = await client.post(
-        f"{OPCODE_BASE}/session/{sid}/message",
-        json=body,
-    )
-    if resp.status_code == 404:
-        _sessions.pop(chat_id, None)
-        sid = await _get_or_create_session(chat_id)
+    async with httpx.AsyncClient(timeout=120) as client:
         resp = await client.post(
-            f"{OPCODE_BASE}/session/{sid}/message",
+            f"{ZEN_API_BASE}/chat/completions",
             json=body,
+            headers=HEADERS,
         )
-    resp.raise_for_status()
-    data = resp.json()
-    parts = data.get("parts", [])
-    texts = [p["text"] for p in parts if p.get("type") == "text"]
-    return "\n".join(texts)
+        resp.raise_for_status()
+        return resp.json()["choices"][0]["message"]["content"]
+
+
+async def close_client() -> None:
+    pass
 
 
 async def tts(text: str) -> bytes:
-    import io
-
-    import edge_tts
-
     communicate = edge_tts.Communicate(text, TTS_VOICE)
     audio_bytes = io.BytesIO()
     async for chunk in communicate.stream():
