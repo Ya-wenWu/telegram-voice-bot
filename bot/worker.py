@@ -180,7 +180,7 @@ class WorkerPool:
                 logger.exception("Worker %d failed processing task", idx)
                 await self._safe_send(
                     task.bot, task.chat_id,
-                    f"❌ Processing error ({type(e).__name__}): {e}",
+                    "⚠️ 系統忙碌，請稍後再試",
                     task.reply_to_message_id,
                 )
             finally:
@@ -271,9 +271,12 @@ class WorkerPool:
 
         except Exception as e:
             logger.exception("Worker failed processing task")
-            await self._safe_send(
-                task.bot, chat_id, f"❌ Error ({type(e).__name__}): {e}", task.reply_to_message_id
-            )
+            if full_text:
+                await self._deliver_text(task, msg_id, full_text)
+            else:
+                await self._safe_send(
+                    task.bot, chat_id, "⚠️ 系統忙碌，請稍後再試", task.reply_to_message_id
+                )
         finally:
             stop_event.set()
             await asyncio.gather(typing_task, return_exceptions=True)
