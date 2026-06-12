@@ -59,6 +59,31 @@ def _split_sentences(text: str) -> list[str]:
     return sentences
 
 
+def _scan_sentences(
+    text: str, pos: int, min_len: int = 4,
+) -> tuple[int, list[str]]:
+    """Scan *text* from character position *pos* forward for complete sentences.
+    
+    Returns ``(new_pos, sentences)`` where *new_pos* advances past all
+    examined characters and *sentences* are complete (boundary-terminated)
+    fragments whose length >= *min_len*.
+    """
+    found: list[str] = []
+    while pos < len(text):
+        boundary = None
+        for i in range(pos, len(text)):
+            if text[i] in _SENTENCE_ENDS:
+                boundary = i
+                break
+        if boundary is None:
+            break
+        sentence = text[pos:boundary + 1].strip()
+        pos = boundary + 1
+        if len(sentence) >= min_len:
+            found.append(sentence)
+    return pos, found
+
+
 def _split_message(text: str, limit: int = MAX_MSG_LEN) -> list[str]:
     if len(text) <= limit:
         return [text]
@@ -177,7 +202,7 @@ class WorkerPool:
             full_text = ""
             tts_parts: list[bytes] = []
             tts_tasks: list[asyncio.Task[bytes]] = []
-            sentences_seen = 0
+            pos = 0
 
             async for token in chat_stream(chat_id, task.text):
                 full_text += token
@@ -192,17 +217,9 @@ class WorkerPool:
                     pass
 
                 if task.is_voice:
-                    # Sentence-level TTS pipelining
-                    sentences = _split_sentences(full_text)
-                    # Dispatch any new complete sentences (sentences_seen tracks our progress)
-                    if len(sentences) > sentences_seen:
-                        for s in sentences[sentences_seen:]:
-                            sentences_seen += 1
-                            # Don't dispatch very short fragments
-                            if len(s) < 4:
-                                continue
-                            t = asyncio.create_task(tts(s))
-                            tts_tasks.append(t)
+                    pos, new = _scan_sentences(full_text, pos)
+                    for s in new:
+                        tts_tasks.append(asyncio.create_task(tts(s)))
 
             # Voice: collect all TTS results
             if task.is_voice and tts_tasks:
