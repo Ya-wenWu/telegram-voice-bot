@@ -44,28 +44,31 @@ async def chat_stream(chat_id: int, text: str):
         ],
         "stream": True,
     }
-    async with httpx.AsyncClient(timeout=120) as client:
-        async with client.stream(
-            "POST",
-            f"{ZEN_API_BASE}/chat/completions",
-            json=body,
-            headers=HEADERS,
-        ) as resp:
-            resp.raise_for_status()
-            async for line in resp.aiter_lines():
-                if line.startswith("data: "):
-                    payload = line[6:].strip()
-                    if payload == "[DONE]":
-                        break
-                    import json
-                    try:
-                        chunk = json.loads(payload)
-                        delta = chunk.get("choices", [{}])[0].get("delta", {})
-                        content = delta.get("content", "")
-                        if content:
-                            yield content
-                    except json.JSONDecodeError:
-                        continue
+    try:
+        async with httpx.AsyncClient(timeout=120) as client:
+            async with client.stream(
+                "POST",
+                f"{ZEN_API_BASE}/chat/completions",
+                json=body,
+                headers=HEADERS,
+            ) as resp:
+                resp.raise_for_status()
+                async for line in resp.aiter_lines():
+                    if line.startswith("data: "):
+                        payload = line[6:].strip()
+                        if payload == "[DONE]":
+                            break
+                        import json
+                        try:
+                            chunk = json.loads(payload)
+                            delta = chunk.get("choices", [{}])[0].get("delta", {})
+                            content = delta.get("content", "")
+                            if content:
+                                yield content
+                        except json.JSONDecodeError:
+                            continue
+    except (httpx.ReadError, httpx.TimeoutException, httpx.RemoteProtocolError) as e:
+        logger.warning("Stream interrupted for chat %d: %s", chat_id, e)
 
 
 async def close_client() -> None:

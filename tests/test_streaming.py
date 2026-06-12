@@ -1,6 +1,7 @@
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 
 from bot.opencode_client import chat_stream
@@ -122,12 +123,27 @@ class TestChatStream:
             MockClient.return_value.__aenter__.return_value = mock_client
             yield mock_client
 
-    def _make_stream_cm(self, lines: list[str], mock_response: MagicMock):
-        """Create a callable that acts like client.stream() returning a context manager."""
-        async def aiter_lines():
-            for line in lines:
-                yield line
-        mock_response.aiter_lines = aiter_lines
+    def _make_stream_cm(
+        self,
+        lines: list[str] | None = None,
+        mock_response: MagicMock | None = None,
+        *,
+        aiter_lines_fn=None,
+    ):
+        """Create a callable that acts like client.stream() returning a context manager.
+        
+        Provide *lines* for a simple line-by-line async generator,
+        or *aiter_lines_fn* for custom stream behavior (e.g. raising an error mid-stream).
+        """
+        if mock_response is None:
+            mock_response = MagicMock()
+        if aiter_lines_fn:
+            mock_response.aiter_lines = aiter_lines_fn
+        elif lines is not None:
+            async def _gen():
+                for line in lines:
+                    yield line
+            mock_response.aiter_lines = _gen
         mock_stream_value = MagicMock()
         mock_stream_value.__aenter__.return_value = mock_response
         mock_stream_value.__aexit__ = AsyncMock(return_value=None)
@@ -215,6 +231,61 @@ class TestChatStream:
         async for token in chat_stream(0, "test"):
             result += token
         assert result == "hello"
+
+    @pytest.mark.asyncio()
+    async def test_read_error_ends_gracefully(self, mock_http):
+        async def aiter_lines():
+            yield 'data: {"choices":[{"delta":{"content":"partial"}}]}'
+            raise httpx.ReadError("Connection reset")
+        mock_http.stream = self._make_stream_cm(
+            aiter_lines_fn=aiter_lines,
+        )
+
+        tokens = []
+        async for token in chat_stream(0, "test"):
+            tokens.append(token)
+        assert tokens == ["partial"]
+
+    @pytest.mark.asyncio()
+    async def test_timeout_ends_gracefully(self, mock_http):
+        async def aiter_lines():
+            yield 'data: {"choices":[{"delta":{"content":"超時前"}}]}'
+            yield 'data: {"choices":[{"delta":{"content":"的內容"}}]}'
+            raise httpx.TimeoutException("Read timeout")
+        mock_http.stream = self._make_stream_cm(
+            aiter_lines_fn=aiter_lines,
+        )
+
+        tokens = []
+        async for token in chat_stream(0, "test"):
+            tokens.append(token)
+        assert tokens == ["超時前", "的內容"]
+
+    @pytest.mark.asyncio()
+    async def test_remote_protocol_error_ends_gracefully(self, mock_http):
+        async def aiter_lines():
+            yield ''  # dummy → makes it an async generator, not coroutine
+            raise httpx.RemoteProtocolError("Server disconnected")
+        mock_http.stream = self._make_stream_cm(
+            aiter_lines_fn=aiter_lines,
+        )
+
+        tokens = []
+        async for token in chat_stream(0, "test"):
+            tokens.append(token)
+        assert tokens == []
+
+    @pytest.mark.asyncio()
+    async def test_non_httpx_error_still_propagates(self, mock_http):
+        async def aiter_lines():
+            yield ''
+            raise RuntimeError("Unexpected")
+        mock_http.stream = self._make_stream_cm(
+            aiter_lines_fn=aiter_lines,
+        )
+        with pytest.raises(RuntimeError, match="Unexpected"):
+            async for _ in chat_stream(0, "test"):
+                pass
 
 
 # ── _scan_sentences ─────────────────────────────────────────────────────────
