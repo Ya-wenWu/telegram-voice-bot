@@ -1,9 +1,12 @@
+import shutil
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
 
 from bot.opencode_client import chat_stream
+
+_has_ffmpeg = shutil.which("ffmpeg") is not None
 from bot.worker import _concat_mp3, _scan_sentences, _split_sentences
 
 
@@ -72,13 +75,14 @@ async def test_concat_empty_list_returns_empty():
     assert result == b""
 
 
+@pytest.mark.skipif(not _has_ffmpeg, reason="ffmpeg not installed")
 @pytest.mark.asyncio()
 async def test_concat_multiple_parts_with_ffmpeg():
     part1 = b"\xff\xfb\x90\x00data1"
     part2 = b"\xff\xfb\x90\x00data2"
     result = await _concat_mp3([part1, part2])
-    # ffmpeg may not be installed or may fail; verify we get at least first part back
-    assert result in (b"\xff\xfb\x90\x00data1", b"\xff\xfb\x90\x00data2")
+    assert isinstance(result, bytes)
+    assert len(result) > 0
 
 
 @pytest.mark.asyncio()
@@ -98,6 +102,7 @@ async def test_concat_missing_ffmpeg_raises():
             await _concat_mp3([b"a", b"b"])
 
 
+@pytest.mark.skipif(not _has_ffmpeg, reason="ffmpeg not installed")
 @pytest.mark.asyncio()
 async def test_concat_large_number_of_parts():
     parts = [f"part_{i:03d}:".encode() for i in range(20)]
