@@ -33,6 +33,41 @@ async def chat(chat_id: int, text: str) -> str:
         return resp.json()["choices"][0]["message"]["content"]
 
 
+async def chat_stream(chat_id: int, text: str):
+    """Stream LLM response token by token via SSE."""
+    system_prompt = build_system_prompt()
+    body = {
+        "model": ZEN_MODEL,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": text},
+        ],
+        "stream": True,
+    }
+    async with httpx.AsyncClient(timeout=120) as client:
+        async with client.stream(
+            "POST",
+            f"{ZEN_API_BASE}/chat/completions",
+            json=body,
+            headers=HEADERS,
+        ) as resp:
+            resp.raise_for_status()
+            async for line in resp.aiter_lines():
+                if line.startswith("data: "):
+                    payload = line[6:].strip()
+                    if payload == "[DONE]":
+                        break
+                    import json
+                    try:
+                        chunk = json.loads(payload)
+                        delta = chunk.get("choices", [{}])[0].get("delta", {})
+                        content = delta.get("content", "")
+                        if content:
+                            yield content
+                    except json.JSONDecodeError:
+                        continue
+
+
 async def close_client() -> None:
     pass
 

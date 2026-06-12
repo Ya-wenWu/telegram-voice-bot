@@ -1,20 +1,22 @@
 import asyncio
 import io
 import logging
+import os
+import tempfile
 from dataclasses import dataclass
 
 from telegram import Bot
 
-from bot.opencode_client import chat, tts
+from bot.opencode_client import chat, chat_stream, tts
 
 logger = logging.getLogger(__name__)
 
-# Telegram max message length
 MAX_MSG_LEN = 4096
-# Typing indicator refresh interval
 TYPING_REFRESH_INTERVAL = 4.0
-# Progress animation interval
 PROGRESS_INTERVAL = 8.0
+
+# Chinese + English sentence endings
+_SENTENCE_ENDS = frozenset("。！？；.!?\n")
 
 
 @dataclass
@@ -27,7 +29,6 @@ class Task:
 
 
 async def _typing_loop(bot: Bot, chat_id: int, stop_event: asyncio.Event) -> None:
-    """Refresh typing indicator every 4s until stop_event is set."""
     while not stop_event.is_set():
         try:
             await bot.send_chat_action(chat_id=chat_id, action="typing")
@@ -39,30 +40,26 @@ async def _typing_loop(bot: Bot, chat_id: int, stop_event: asyncio.Event) -> Non
             pass
 
 
-async def _progress_animation(
-    bot: Bot, chat_id: int, msg_id: int, stop_event: asyncio.Event
-) -> None:
-    """Update placeholder message periodically to show the bot is alive."""
-    frames = ["⏳ Thinking", "⏳ Thinking.", "⏳ Thinking..", "⏳ Thinking..."]
-    idx = 0
-    while not stop_event.is_set():
-        try:
-            await bot.edit_message_text(
-                chat_id=chat_id,
-                message_id=msg_id,
-                text=frames[idx % len(frames)],
-            )
-        except Exception:
-            pass
-        idx += 1
-        try:
-            await asyncio.wait_for(stop_event.wait(), timeout=PROGRESS_INTERVAL)
-        except asyncio.TimeoutError:
-            pass
+def _split_sentences(text: str) -> list[str]:
+    """Split text into sentences at natural boundaries."""
+    if not text:
+        return []
+    sentences = []
+    buf: list[str] = []
+    for ch in text:
+        buf.append(ch)
+        if ch in _SENTENCE_ENDS:
+            s = "".join(buf).strip()
+            if s:
+                sentences.append(s)
+            buf = []
+    remaining = "".join(buf).strip()
+    if remaining:
+        sentences.append(remaining)
+    return sentences
 
 
 def _split_message(text: str, limit: int = MAX_MSG_LEN) -> list[str]:
-    """Split long messages at natural boundaries."""
     if len(text) <= limit:
         return [text]
     chunks = []
@@ -80,6 +77,41 @@ def _split_message(text: str, limit: int = MAX_MSG_LEN) -> list[str]:
         chunks.append(text[:split_at])
         text = text[split_at:]
     return chunks
+
+
+async def _concat_mp3(parts: list[bytes]) -> bytes:
+    """Concatenate multiple MP3 byte streams into one using ffmpeg."""
+    if len(parts) <= 1:
+        return parts[0] if parts else b""
+    tmpdir = tempfile.mkdtemp(prefix="tts_concat_")
+    try:
+        paths = []
+        for i, data in enumerate(parts):
+            path = os.path.join(tmpdir, f"part_{i:03d}.mp3")
+            with open(path, "wb") as f:
+                f.write(data)
+            paths.append(path)
+        list_path = os.path.join(tmpdir, "files.txt")
+        with open(list_path, "w") as f:
+            for p in paths:
+                f.write(f"file '{p}'\n")
+        out_path = os.path.join(tmpdir, "out.mp3")
+        proc = await asyncio.create_subprocess_exec(
+            "ffmpeg", "-y", "-f", "concat", "-safe", "0",
+            "-i", list_path, "-c", "copy", "-loglevel", "quiet", out_path,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        ret = await proc.wait()
+        if ret == 0 and os.path.exists(out_path):
+            with open(out_path, "rb") as f:
+                return f.read()
+        logger.warning("ffmpeg concat failed (ret=%d), falling back to first part", ret)
+        return parts[0]
+    finally:
+        for fname in os.listdir(tmpdir):
+            os.unlink(os.path.join(tmpdir, fname))
+        os.rmdir(tmpdir)
 
 
 class WorkerPool:
@@ -116,14 +148,12 @@ class WorkerPool:
                 continue
             except asyncio.CancelledError:
                 break
-
             try:
                 await self._process(task)
             except Exception as e:
                 logger.exception("Worker %d failed processing task", idx)
                 await self._safe_send(
-                    task.bot,
-                    task.chat_id,
+                    task.bot, task.chat_id,
                     f"❌ Processing error: {e}",
                     task.reply_to_message_id,
                 )
@@ -134,7 +164,6 @@ class WorkerPool:
         chat_id = task.chat_id
         stop_event = asyncio.Event()
 
-        # Send placeholder immediately
         placeholder = await task.bot.send_message(
             chat_id=chat_id,
             text="⏳ Thinking",
@@ -142,35 +171,75 @@ class WorkerPool:
         )
         msg_id = placeholder.message_id
 
-        # Start background tasks: typing indicator + progress animation
-        typing_task = asyncio.create_task(
-            _typing_loop(task.bot, chat_id, stop_event)
-        )
-        progress_task = asyncio.create_task(
-            _progress_animation(task.bot, chat_id, msg_id, stop_event)
-        )
+        typing_task = asyncio.create_task(_typing_loop(task.bot, chat_id, stop_event))
 
         try:
-            # Call LLM (blocking I/O via asyncio — doesn't block event loop)
-            reply_text = await chat(chat_id, task.text)
+            full_text = ""
+            tts_parts: list[bytes] = []
+            tts_tasks: list[asyncio.Task[bytes]] = []
+            sentences_seen = 0
 
-            # Replace placeholder with actual response
+            async for token in chat_stream(chat_id, task.text):
+                full_text += token
+                # Progressive text update — every token we see
+                try:
+                    await task.bot.edit_message_text(
+                        chat_id=chat_id,
+                        message_id=msg_id,
+                        text=full_text[:MAX_MSG_LEN],
+                    )
+                except Exception:
+                    pass
+
+                if task.is_voice:
+                    # Sentence-level TTS pipelining
+                    sentences = _split_sentences(full_text)
+                    # Dispatch any new complete sentences (sentences_seen tracks our progress)
+                    if len(sentences) > sentences_seen:
+                        for s in sentences[sentences_seen:]:
+                            sentences_seen += 1
+                            # Don't dispatch very short fragments
+                            if len(s) < 4:
+                                continue
+                            t = asyncio.create_task(tts(s))
+                            tts_tasks.append(t)
+
+            # Voice: collect all TTS results
+            if task.is_voice and tts_tasks:
+                await task.bot.send_chat_action(chat_id=chat_id, action="upload_voice")
+                for t in tts_tasks:
+                    try:
+                        tts_parts.append(await t)
+                    except Exception:
+                        pass
+                if tts_parts:
+                    combined = await _concat_mp3(tts_parts)
+                    await task.bot.send_audio(
+                        chat_id=chat_id,
+                        audio=io.BytesIO(combined),
+                        filename="reply.mp3",
+                        title="AI Voice Reply",
+                        read_timeout=60,
+                        write_timeout=60,
+                        reply_to_message_id=task.reply_to_message_id,
+                    )
+
+            # Final text update (in case streaming was truncated)
             try:
                 await task.bot.edit_message_text(
                     chat_id=chat_id,
                     message_id=msg_id,
-                    text=reply_text[:MAX_MSG_LEN],
+                    text=full_text[:MAX_MSG_LEN],
                 )
             except Exception:
                 await task.bot.send_message(
                     chat_id=chat_id,
-                    text=reply_text[:MAX_MSG_LEN],
+                    text=full_text[:MAX_MSG_LEN],
                     reply_to_message_id=task.reply_to_message_id,
                 )
 
-            # Send remaining chunks if response > 4096 chars
-            if len(reply_text) > MAX_MSG_LEN:
-                for chunk in _split_message(reply_text[MAX_MSG_LEN:], MAX_MSG_LEN):
+            if len(full_text) > MAX_MSG_LEN:
+                for chunk in _split_message(full_text[MAX_MSG_LEN:], MAX_MSG_LEN):
                     try:
                         await task.bot.send_message(
                             chat_id=chat_id,
@@ -180,14 +249,6 @@ class WorkerPool:
                     except Exception:
                         pass
 
-            # Fire TTS in background — don't block the next message
-            if reply_text:
-                asyncio.create_task(
-                    self._send_tts(
-                        task.bot, chat_id, reply_text, task.reply_to_message_id
-                    )
-                )
-
         except Exception as e:
             logger.exception("Worker failed processing task")
             await self._safe_send(
@@ -195,26 +256,7 @@ class WorkerPool:
             )
         finally:
             stop_event.set()
-            await asyncio.gather(typing_task, progress_task, return_exceptions=True)
-
-    async def _send_tts(
-        self, bot: Bot, chat_id: int, text: str, reply_to_message_id: int
-    ) -> None:
-        """Generate and send TTS audio in background (fire-and-forget)."""
-        try:
-            await bot.send_chat_action(chat_id=chat_id, action="upload_voice")
-            speech = await tts(text)
-            await bot.send_audio(
-                chat_id=chat_id,
-                audio=io.BytesIO(speech),
-                filename="reply.mp3",
-                title="AI Voice Reply",
-                read_timeout=60,
-                write_timeout=60,
-                reply_to_message_id=reply_to_message_id,
-            )
-        except Exception as e:
-            logger.warning("TTS or audio reply failed (non-fatal): %s", e)
+            await asyncio.gather(typing_task, return_exceptions=True)
 
     @staticmethod
     async def _safe_send(
