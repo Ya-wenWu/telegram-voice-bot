@@ -1,4 +1,4 @@
 python-telegram-bot>=22.8
 httpx>=0.28.1
-edge-tts>=7.0
+edge-tts>=7.2.8
 python-dotenv>=1.2.2
