@@ -1,14 +1,18 @@
+import fcntl
 import logging
 import os
 import sys
+from pathlib import Path
 
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters
 
 from bot import handlers
-from bot.config import TELEGRAM_BOT_TOKEN
+from bot.config import TELEGRAM_BOT_TOKEN, TMP_DIR, ZEN_API_KEY
 from bot.handlers import handle_text, handle_voice, start
 from bot.opencode_client import close_client
+from bot.redis_client import close_redis
+from bot.whisper import close_client as close_whisper_client
 from bot.worker import WorkerPool
 
 logging.basicConfig(
@@ -19,33 +23,34 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
-LOCK_FILE = "/tmp/telegram-voice-bot.lock"
+_STATE_DIR = Path.home() / ".local" / "state" / "telegram-voice-bot"
+_STATE_DIR.mkdir(parents=True, exist_ok=True)
+TMP_DIR.mkdir(parents=True, exist_ok=True)
+LOCK_FILE = str(_STATE_DIR / "bot.lock")
+_LOCK_FD = None
 
 
-def _aquire_lock() -> None:
+def _acquire_lock() -> None:
+    global _LOCK_FD
     try:
-        if os.path.exists(LOCK_FILE):
-            with open(LOCK_FILE) as f:
-                old_pid = int(f.read().strip())
-            if os.path.exists(f"/proc/{old_pid}"):
-                logger.error("Another instance (PID %d) is already running", old_pid)
-                sys.exit(1)
-            logger.warning("Stale lock file found (PID %d not running), overwriting", old_pid)
-        with open(LOCK_FILE, "w") as f:
-            f.write(str(os.getpid()))
-    except (OSError, ValueError) as exc:
+        fd = os.open(LOCK_FILE, os.O_RDWR | os.O_CREAT, 0o600)
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        os.ftruncate(fd, 0)
+        os.write(fd, str(os.getpid()).encode())
+        _LOCK_FD = fd
+    except (OSError, BlockingIOError) as exc:
         logger.error("Failed to acquire lock: %s", exc)
         sys.exit(1)
 
 
 def _release_lock() -> None:
+    global _LOCK_FD
     try:
-        if os.path.exists(LOCK_FILE):
-            with open(LOCK_FILE) as f:
-                pid = int(f.read().strip())
-            if pid == os.getpid():
-                os.unlink(LOCK_FILE)
-    except (OSError, ValueError):
+        if _LOCK_FD is not None:
+            fcntl.flock(_LOCK_FD, fcntl.LOCK_UN)
+            os.close(_LOCK_FD)
+            _LOCK_FD = None
+    except OSError:
         pass
 
 
@@ -70,8 +75,8 @@ class TokenFilter(logging.Filter):
             record.args = tuple(filtered)
         return True
 
-NUM_WORKERS = int(os.getenv("BOT_WORKERS", "5"))
-CONCURRENT_UPDATES = int(os.getenv("CONCURRENT_UPDATES", "8"))
+NUM_WORKERS = int(os.getenv("BOT_WORKERS", "1"))
+CONCURRENT_UPDATES = int(os.getenv("CONCURRENT_UPDATES", "1"))
 
 
 async def post_init(application: Application) -> None:
@@ -90,15 +95,19 @@ async def post_stop(application: Application) -> None:
         await handlers.worker_pool.stop()
         logger.info("Worker pool stopped")
     await close_client()
+    await close_whisper_client()
+    await close_redis()
     logger.info("HTTP client closed")
     _release_lock()
 
 
 def main() -> None:
-    _aquire_lock()
+    _acquire_lock()
 
-    for name in ("httpx", "httpcore", "telegram"):
-        logging.getLogger(name).addFilter(TokenFilter(TELEGRAM_BOT_TOKEN))
+    secrets = [s for s in (TELEGRAM_BOT_TOKEN, ZEN_API_KEY) if s]
+    for name in ("httpx", "httpcore", "telegram", "bot"):
+        for secret in secrets:
+            logging.getLogger(name).addFilter(TokenFilter(secret))
 
     if not TELEGRAM_BOT_TOKEN or TELEGRAM_BOT_TOKEN == "your_token_here":
         logger.error("TELEGRAM_BOT_TOKEN is not set!")
