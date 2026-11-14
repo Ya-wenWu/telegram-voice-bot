@@ -2,15 +2,15 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-import bot.whisper as whisper_mod
+import bot.http_client as http_client_mod
 from bot.whisper import MAX_AUDIO_BYTES, _endpoint, _transcribe_chunk, transcribe
 
 
 @pytest.fixture(autouse=True)
 def _reset_client():
-    whisper_mod._client = None
+    http_client_mod._client = None
     yield
-    whisper_mod._client = None
+    http_client_mod._client = None
 
 
 def _mock_http(response=None, side_effect=None):
@@ -18,7 +18,7 @@ def _mock_http(response=None, side_effect=None):
     client = MagicMock()
     client.is_closed = False
     client.post = AsyncMock(return_value=response, side_effect=side_effect)
-    return patch("bot.whisper.httpx.AsyncClient", return_value=client), client
+    return patch("bot.http_client.httpx.AsyncClient", return_value=client), client
 
 
 class TestTranscribe:
@@ -131,8 +131,8 @@ class TestTranscribeChunk:
         client.post = AsyncMock(side_effect=[retry, ok])
 
         with (
-            patch("bot.whisper._get_client", return_value=client),
-            patch("bot.whisper.asyncio.sleep", AsyncMock()),
+            patch("bot.http_client.get_client", return_value=client),
+            patch("bot.http_client.asyncio.sleep", AsyncMock()),
             patch("bot.whisper.WHISPER_URL", "http://localhost:9000"),
         ):
             assert await _transcribe_chunk(b"audio") == "重試成功"
