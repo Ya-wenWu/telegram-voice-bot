@@ -5,6 +5,7 @@ from typing import BinaryIO
 
 import httpx
 
+import bot
 from bot.config import (
     WHISPER_API_BASE,
     WHISPER_API_KEY,
@@ -18,22 +19,6 @@ logger = logging.getLogger(__name__)
 
 # Common remote APIs cap uploads at 25 MB.
 MAX_AUDIO_BYTES = 25 * 1024 * 1024
-
-_client: httpx.AsyncClient | None = None
-
-
-def _get_client() -> httpx.AsyncClient:
-    global _client
-    if _client is None or _client.is_closed:
-        _client = httpx.AsyncClient(timeout=120)
-    return _client
-
-
-async def close_client() -> None:
-    global _client
-    if _client is not None and not _client.is_closed:
-        await _client.aclose()
-    _client = None
 
 
 async def transcribe(audio: bytes | str | os.PathLike[str]) -> str:
@@ -92,7 +77,7 @@ async def _transcribe_chunk(chunk: bytes | BinaryIO) -> str:
         if hasattr(chunk, "seek"):
             chunk.seek(0)
         files = {"file": ("audio.ogg", chunk, "audio/ogg")}
-        return await _get_client().post(url, files=files, data=data, headers=headers)
+        return await bot.http_client.get_client().post(url, files=files, data=data, headers=headers)
 
     resp = await request_with_retry(_send, label="Transcription")
     resp.raise_for_status()
