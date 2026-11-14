@@ -37,9 +37,18 @@ def _rate_limited(user_id: int) -> bool:
     return False
 
 
-def _get_user_id(update: Update) -> int | None:
-    """Safely extract user ID from update."""
-    return update.effective_user.id if update.effective_user else None
+def _check_auth_and_throttle(update: Update) -> tuple[int | None, str | None]:
+    """Shared authorization and throttling guard.
+
+    Returns (user_id, None) when allowed, or (None, reason) when the request
+    should be rejected. Callers are responsible for sending rejection replies.
+    """
+    user_id = update.effective_user.id if update.effective_user else None
+    if user_id is None or not _is_allowed(user_id):
+        return None, "Unauthorized."
+    if _rate_limited(user_id):
+        return None, "Too many requests, please wait."
+    return user_id, None
 
 
 def _get_chat_id(update: Update) -> int | None:
@@ -70,20 +79,17 @@ async def _reply(update: Update, text: str):
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user_id = _get_user_id(update)
-    if user_id is None or not _is_allowed(user_id):
-        await _reply(update, "Unauthorized.")
+    user_id, reason = _check_auth_and_throttle(update)
+    if user_id is None:
+        await _reply(update, reason or "Unauthorized.")
         return
     await _reply(update, "Send me a voice or text message and I'll reply!")
 
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user_id = _get_user_id(update)
-    if user_id is None or not _is_allowed(user_id):
-        await _reply(update, "Unauthorized.")
-        return
-    if _rate_limited(user_id):
-        await _reply(update, "Too many requests, please wait.")
+    user_id, reason = _check_auth_and_throttle(update)
+    if user_id is None:
+        await _reply(update, reason or "Unauthorized.")
         return
     text = _get_text(update)
     if len(text) > MAX_TEXT_LEN:
@@ -111,12 +117,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user_id = _get_user_id(update)
-    if user_id is None or not _is_allowed(user_id):
-        await _reply(update, "Unauthorized.")
-        return
-    if _rate_limited(user_id):
-        await _reply(update, "Too many requests, please wait.")
+    user_id, reason = _check_auth_and_throttle(update)
+    if user_id is None:
+        await _reply(update, reason or "Unauthorized.")
         return
 
     voice = _get_voice(update)

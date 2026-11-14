@@ -260,13 +260,28 @@ class WorkerPool:
             last_edit = 0.0
 
             def queue_tts(text_so_far: str, cursor: int) -> int:
-                """Queue TTS for complete sentences, respecting both caps."""
+                """Queue TTS for complete sentences, respecting both caps.
+
+                Truncate or constrain each sentence to the remaining TTS budget
+                before scheduling it, and cover a sentence longer than the
+                configured maximum.
+                """
                 nonlocal tts_chars
                 cursor, new = _scan_sentences(text_so_far, cursor)
                 for sentence in new:
-                    if tts_chars >= TTS_MAX_CHARS or len(tts_tasks) >= TTS_MAX_SENTENCES:
-                        logger.info("TTS budget reached; sending text only for the rest")
+                    if len(tts_tasks) >= TTS_MAX_SENTENCES:
+                        logger.info("TTS sentence budget reached; sending text only for the rest")
                         break
+                    remaining_chars = TTS_MAX_CHARS - tts_chars
+                    if remaining_chars <= 0:
+                        logger.info("TTS char budget reached; sending text only for the rest")
+                        break
+                    if len(sentence) > remaining_chars:
+                        sentence = sentence[:remaining_chars]
+                        logger.info(
+                            "Truncated sentence to %d chars (TTS budget limit)",
+                            remaining_chars,
+                        )
                     tts_chars += len(sentence)
                     tts_tasks.append(asyncio.create_task(self._tts_limited(sentence)))
                 return cursor
