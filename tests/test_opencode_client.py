@@ -4,6 +4,7 @@ import httpx
 import pytest
 
 import bot.retry as retry_mod
+from main import TokenFilter
 
 
 class TestRetry:
@@ -75,3 +76,46 @@ class TestRetry:
             resp = await retry_mod.request_with_retry(send, label="test")
 
         assert resp.status_code == 429
+
+
+class TestTokenFilterRedaction:
+    """Test TokenFilter masks secrets in non-string log arguments."""
+
+    def test_masks_token_in_dict_args(self):
+        f = TokenFilter("supersecrettoken1234")
+        record = MagicMock()
+        record.msg = "user=%(user)s"
+        record.args = {"user": "supersecrettoken1234"}
+        assert f.filter(record)
+        assert record.args == {"user": "***supe...1234***"}
+
+    def test_masks_token_in_tuple_args_non_string(self):
+        # Non-string arg (e.g. an HTTP URL object) - str() must be masked
+        f = TokenFilter("supersecrettoken1234")
+        record = MagicMock()
+        record.msg = "url=%s"
+
+        class FakeUrl:
+            def __str__(self):
+                return "https://api.example.com/supersecrettoken1234/path"
+
+        record.args = (FakeUrl(),)
+        assert f.filter(record)
+        assert "***" in str(record.args[0])
+
+    def test_masks_token_in_plain_args_non_string(self):
+        f = TokenFilter("supersecrettoken1234")
+        record = MagicMock()
+        record.msg = "value=%s"
+        record.args = (42,)
+        assert f.filter(record)
+        assert record.args == ("42",)
+
+    def test_dict_args_stays_dict(self):
+        f = TokenFilter("supersecrettoken1234")
+        record = MagicMock()
+        record.msg = "user=%(user)s token supersecrettoken1234"
+        record.args = {"user": "alice"}
+        assert f.filter(record)
+        assert isinstance(record.args, dict)
+        assert record.msg == "user=%(user)s token ***supe...1234***"
