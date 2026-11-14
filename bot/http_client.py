@@ -4,7 +4,6 @@ Centralizes client creation and cleanup so that multiple modules
 (opencode_client, whisper) don't each maintain their own duplicate client.
 """
 
-import asyncio  # noqa: F401 - imported for test patching of bot.http_client.asyncio.sleep
 import logging
 
 import httpx

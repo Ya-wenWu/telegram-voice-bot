@@ -132,7 +132,7 @@ class TestTranscribeChunk:
 
         with (
             patch("bot.http_client.get_client", return_value=client),
-            patch("bot.http_client.asyncio.sleep", AsyncMock()),
+            patch("bot.retry.asyncio.sleep", AsyncMock()),
             patch("bot.whisper.WHISPER_URL", "http://localhost:9000"),
         ):
             assert await _transcribe_chunk(b"audio") == "重試成功"
