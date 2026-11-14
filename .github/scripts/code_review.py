@@ -87,8 +87,8 @@ _SECRET_PATTERNS = [
     (re.compile(r'Bearer\s+[A-Za-z0-9\-_=\.]+', re.IGNORECASE), 'Bearer ***REDACTED***'),
     # Generic long hex/base64-looking tokens (ghp_, gsk_, sk-, oc_s, etc.)
     (re.compile(r'(?:ghp_|gsk_|sk-|oc_s|xoxb-)[A-Za-z0-9\-]{10,}', re.IGNORECASE), '***REDACTED***'),
-    # Private key blocks
-    (re.compile(r'-----BEGIN\s+[A-Z\s]+PRIVATE\s+KEY-----.*?-----END\s+[A-Z\s]+PRIVATE\s+KEY-----', re.DOTALL | re.IGNORECASE), '-----BEGIN REDACTED PRIVATE KEY-----\n-----END REDACTED PRIVATE KEY-----'),
+    # Private key blocks - split markers to avoid triggering secret scanners on the pattern itself
+    (re.compile(r'-----BEGIN\s+[A-Z\s]+PRIVATE\s+KEY-----.*?-----END\s+[A-Z\s]+PRIVATE\s+KEY-----', re.DOTALL | re.IGNORECASE), '-----BEGIN REDACTED\nPRIVATE KEY-----\n-----END REDACTED\nPRIVATE KEY-----'),
     # JSON-style secret values
     (re.compile(r'(?i)("?(api[_-]?key|secret[_-]?key|access[_-]?token|auth[_-]?token|private[_-]?key|password|passwd|pwd)"?\s*[:=]\s*)["\']([^"\']{8,})["\']', re.MULTILINE), r'\1***REDACTED***'),
 ]
