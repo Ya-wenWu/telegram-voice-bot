@@ -5,6 +5,7 @@ import logging
 import edge_tts
 import httpx
 
+import bot
 from bot.config import (
     TTS_VOICE,
     ZEN_API_BASE,
@@ -23,22 +24,6 @@ HEADERS = {
 
 MAX_TEXT_LEN = 8000
 
-_client: httpx.AsyncClient | None = None
-
-
-def _get_client() -> httpx.AsyncClient:
-    global _client
-    if _client is None or _client.is_closed:
-        _client = httpx.AsyncClient(timeout=120)
-    return _client
-
-
-async def close_client() -> None:
-    global _client
-    if _client is not None and not _client.is_closed:
-        await _client.aclose()
-    _client = None
-
 
 def _messages(text: str) -> list[dict[str, str]]:
     return [
@@ -51,7 +36,7 @@ async def chat(chat_id: int, text: str) -> str:
     body = {"model": ZEN_MODEL, "messages": _messages(text)}
 
     async def _send() -> httpx.Response:
-        return await _get_client().post(
+        return await bot.http_client.get_client().post(
             f"{ZEN_API_BASE}/chat/completions",
             json=body,
             headers=HEADERS,
@@ -70,7 +55,7 @@ async def chat_stream(chat_id: int, text: str):
         "stream": True,
     }
 
-    client = _get_client()
+    client = bot.http_client.get_client()
     async with client.stream(
         "POST",
         f"{ZEN_API_BASE}/chat/completions",
