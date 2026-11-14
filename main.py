@@ -10,9 +10,8 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters
 from bot import handlers
 from bot.config import TELEGRAM_BOT_TOKEN, TMP_DIR, WHISPER_API_KEY, ZEN_API_KEY
 from bot.handlers import handle_text, handle_voice, start
-from bot.opencode_client import close_client
+from bot.http_client import close_client
 from bot.redis_client import close_redis
-from bot.whisper import close_client as close_whisper_client
 from bot.worker import WorkerPool
 
 
@@ -133,7 +132,6 @@ async def post_stop(application: Application) -> None:
         await handlers.worker_pool.stop()
         logger.info("Worker pool stopped")
     await close_client()
-    await close_whisper_client()
     await close_redis()
     logger.info("HTTP client closed")
     _release_lock()
