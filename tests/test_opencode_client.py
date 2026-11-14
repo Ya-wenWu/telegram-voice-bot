@@ -163,5 +163,5 @@ class TestRedactDiff:
         assert "ZEN_API_KEY=REDACTED_TEST_KEYin redacted
         assert "WHISPER_API_KEY=REDACTED_TEST_KEYin redacted
         assert "12345:abcdef" not in redacted
-        assert "sk-secret123" not in redacted
-        assert "gsk-secret456" not in redacted
+        assert "sk_REDACTED_TEST_KEY" not in redacted
+        assert "gsk_REDACTED_TEST_KEY" not in redacted
