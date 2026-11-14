@@ -15,11 +15,43 @@ from bot.redis_client import close_redis
 from bot.whisper import close_client as close_whisper_client
 from bot.worker import WorkerPool
 
+
+class TokenRedactingFormatter(logging.Formatter):
+    """Formatting layer that redacts secrets from all log output.
+
+    Applied at the output handler/formatter level so that descendant logger
+    records and formatted exception tracebacks are sanitized before being
+    emitted to the stream.
+    """
+
+    def __init__(self, tokens: list[str], *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._tokens = [t for t in tokens if t]
+
+    def format(self, record: logging.LogRecord) -> str:
+        msg = super().format(record)
+        for token in self._tokens:
+            if token and token in msg:
+                replacement = f"***{token[:4]}...{token[-4:]}***" if len(token) > 8 else "***"
+                msg = msg.replace(token, replacement)
+        return msg
+
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     stream=sys.stdout,
 )
+
+# Apply token redaction at the output handler/formatter level so that
+# descendant logger records and formatted exception tracebacks are sanitized
+# before being emitted.
+_secrets = [s for s in (TELEGRAM_BOT_TOKEN, ZEN_API_KEY, WHISPER_API_KEY) if s]
+if _secrets:
+    _handler = logging.StreamHandler(sys.stdout)
+    _handler.setFormatter(TokenRedactingFormatter(_secrets))
+    _root = logging.getLogger()
+    _root.handlers = [_handler]
 
 logger = logging.getLogger(__name__)
 
@@ -109,13 +141,6 @@ async def post_stop(application: Application) -> None:
 
 def main() -> None:
     _acquire_lock()
-
-    secrets = [
-        s for s in (TELEGRAM_BOT_TOKEN, ZEN_API_KEY, WHISPER_API_KEY) if s
-    ]
-    for name in ("httpx", "httpcore", "telegram", "bot"):
-        for secret in secrets:
-            logging.getLogger(name).addFilter(TokenFilter(secret))
 
     if not TELEGRAM_BOT_TOKEN or TELEGRAM_BOT_TOKEN == "your_token_here":
         logger.error("TELEGRAM_BOT_TOKEN is not set!")
