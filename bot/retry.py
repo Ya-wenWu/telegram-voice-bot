@@ -44,14 +44,60 @@ def retry_after_seconds(resp: httpx.Response) -> float | None:
     return max(0.0, (when - datetime.now(UTC)).total_seconds())
 
 
+TRANSIENT_EXCEPTIONS = (
+    httpx.TransportError,
+    httpx.TimeoutException,
+    httpx.ConnectError,
+    httpx.ReadTimeout,
+    httpx.ConnectTimeout,
+    httpx.WriteTimeout,
+    httpx.PoolTimeout,
+)
+
+
 async def request_with_retry(
     send: Callable[[], Awaitable[httpx.Response]],
     *,
     label: str,
 ) -> httpx.Response:
-    """Call ``send`` until it succeeds, hits a fatal status, or gives up."""
+    """Call ``send`` until it succeeds, hits a fatal status, or gives up.
+
+    Retries on transient HTTP status codes (429, 5xx) and on transport-level
+    failures such as connection errors and timeouts.
+    """
     for attempt in range(MAX_RETRIES + 1):
-        resp = await send()
+        try:
+            resp = await send()
+        except TRANSIENT_EXCEPTIONS as exc:
+            if attempt == MAX_RETRIES:
+                logger.warning(
+                    "%s failed after %d retries due to %s: %s",
+                    label,
+                    MAX_RETRIES,
+                    type(exc).__name__,
+                    exc,
+                )
+                raise
+            delay = float(2**attempt)
+            if delay > MAX_RETRY_WAIT:
+                logger.warning(
+                    "%s failed after %d retries due to %s: %s (cap %.0fs)",
+                    label,
+                    MAX_RETRIES,
+                    type(exc).__name__,
+                    exc,
+                    MAX_RETRY_WAIT,
+                )
+                raise
+            logger.warning(
+                "%s failed with %s; retrying in %.1fs",
+                label,
+                type(exc).__name__,
+                delay,
+            )
+            await asyncio.sleep(delay)
+            continue
+
         if resp.status_code not in RETRY_STATUS or attempt == MAX_RETRIES:
             return resp
 
