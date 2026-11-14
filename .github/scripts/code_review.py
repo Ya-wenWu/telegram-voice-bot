@@ -169,7 +169,7 @@ def main():
     except httpx.RequestError as e:
         print(f"❌ Network error: {e}", file=sys.stderr)
         sys.exit(1)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - top-level error handler must not crash the review script
         print(f"❌ Unexpected error: {e}", file=sys.stderr)
         sys.exit(1)
 

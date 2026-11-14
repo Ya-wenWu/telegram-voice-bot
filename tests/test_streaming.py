@@ -75,7 +75,7 @@ async def test_concat_empty_list_returns_empty():
 async def test_concat_multiple_parts_with_ffmpeg():
     async def _mock_ffmpeg(*args, **kwargs):
         out_path = args[-1]
-        with open(out_path, "wb") as f:
+        with open(out_path, "wb") as f:  # noqa: ASYNC230
             f.write(b"mocked_concat_result")
         proc = AsyncMock()
         proc.wait.return_value = 0
@@ -100,16 +100,15 @@ async def test_concat_ffmpeg_failure_falls_back():
 
 @pytest.mark.asyncio()
 async def test_concat_missing_ffmpeg_raises():
-    with patch("bot.worker.asyncio.create_subprocess_exec", side_effect=FileNotFoundError):
-        with pytest.raises(FileNotFoundError):
-            await _concat_mp3([b"a", b"b"])
+    with patch("bot.worker.asyncio.create_subprocess_exec", side_effect=FileNotFoundError), pytest.raises(FileNotFoundError):
+        await _concat_mp3([b"a", b"b"])
 
 
 @pytest.mark.asyncio()
 async def test_concat_large_number_of_parts():
     async def _mock_ffmpeg(*args, **kwargs):
         out_path = args[-1]
-        with open(out_path, "wb") as f:
+        with open(out_path, "wb") as f:  # noqa: ASYNC230
             f.write(b"mocked_concat_result")
         proc = AsyncMock()
         proc.wait.return_value = 0
