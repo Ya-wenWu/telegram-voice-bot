@@ -2,6 +2,7 @@
 Reads a PR diff, sends it to Gemini API for review, outputs structured feedback."""
 
 import os
+import re
 import sys
 
 import httpx
@@ -75,6 +76,17 @@ Brief overall assessment.
 - Keep comments professional and constructive
 - Remember: no perfect code, only better code"""
 
+_SECRET_PATTERNS = [
+    # Common secret env var names and their values
+    (re.compile(r'(?i)(api[_-]?key|secret[_-]?key|access[_-]?token|auth[_-]?token|private[_-]?key|password|passwd|pwd)\s*[:=]\s*["\']?([^"\'\s]+)', re.MULTILINE), r'\1=***REDACTED***'),
+    # Bearer tokens
+    (re.compile(r'Bearer\s+[A-Za-z0-9\-_=\.]+', re.IGNORECASE), 'Bearer ***REDACTED***'),
+    # Generic long hex/base64-looking tokens (ghp_, gsk_, sk-, oc_s, etc.)
+    (re.compile(r'(?:ghp_|gsk_|sk-|oc_s|xoxb-)[A-Za-z0-9\-]{10,}', re.IGNORECASE), '***REDACTED***'),
+    # Private key blocks
+    (re.compile(r'-----BEGIN\s+[A-Z\s]+PRIVATE\s+KEY-----.*?-----END\s+[A-Z\s]+PRIVATE\s+KEY-----', re.DOTALL | re.IGNORECASE), '-----BEGIN REDACTED PRIVATE KEY-----\n-----END REDACTED PRIVATE KEY-----'),
+]
+
 
 def read_diff(path: str) -> str:
     with open(path) as f:
@@ -82,6 +94,39 @@ def read_diff(path: str) -> str:
     if not content.strip():
         return "(no diff)"
     return content
+
+
+def redact_diff(diff: str) -> str:
+    """Redact likely sensitive values from a diff before external transmission."""
+    redacted = diff
+    for pattern, replacement in _SECRET_PATTERNS:
+        redacted = pattern.sub(replacement, redacted)
+    return redacted
+
+
+def sanitize_diff_input(diff: str) -> str:
+    """Neutralize prompt-injection vectors in untrusted diff text."""
+    # Remove known prompt-control tokens and role-like markers
+    neutralized = re.sub(r'(?i)(system\s*:|assistant\s*:|user\s*:)', r'[REDACTED_ROLE:\1]', diff)
+    # Neutralize potential instruction headers
+    neutralized = re.sub(r'(?i)(<\|.*?\|>)', '[TOKEN]', neutralized)
+    # Collapse excessive whitespace to reduce injection surface
+    neutralized = re.sub(r'\n{3,}', '\n\n', neutralized)
+    return neutralized
+
+
+def validate_review_output(output: str) -> str:
+    """Post-validate model output deterministically."""
+    blocked_patterns = [
+        r'(?i)ignore\s+previous\s+instructions',
+        r'(?i)disregard\s+all\s+prior',
+        r'(?i)you\s+are\s+now\s+in\s+developer\s+mode',
+        r'(?i)system\s*:\s*ignore',
+    ]
+    for pattern in blocked_patterns:
+        if re.search(pattern, output):
+            return "⚠️ Review output failed safety validation; skipping AI review."
+    return output
 
 
 def call_gemini_api(api_key: str, diff: str, filename: str | None = None) -> str:
@@ -157,8 +202,13 @@ def main():
     if len(diff) > 80000:
         diff = diff[:80000] + "\n... (truncated, diff too large)"
 
+    # Redact secrets and sanitize untrusted diff input before external transmission
+    diff = redact_diff(diff)
+    diff = sanitize_diff_input(diff)
+
     try:
         review = call_gemini_api(api_key, diff, filename)
+        review = validate_review_output(review)
         print(review)
     except httpx.HTTPStatusError as e:
         if e.response.status_code == 429:
