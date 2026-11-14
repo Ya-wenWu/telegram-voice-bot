@@ -119,3 +119,49 @@ class TestTokenFilterRedaction:
         assert f.filter(record)
         assert isinstance(record.args, dict)
         assert record.msg == "user=%(user)s token ***supe...1234***"
+
+
+
+class TestRedactDiff:
+    """Test _SECRET_PATTERNS redaction of sensitive values in diffs."""
+
+    @pytest.fixture()
+    def code_review_module(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "code_review", ".github/scripts/code_review.py"
+        )
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+
+    @pytest.mark.parametrize("diff_input,expected_pattern", [
+        # Known project secret env var names
+        ("TELEGRAM_BOT_TOKEN=REDACTED_TEST_TOKEN"TELEGRAM_BOT_TOKEN=REDACTED_TEST_TOKEN
+        ("ZEN_API_KEY=REDACTED_TEST_KEY"ZEN_API_KEY=REDACTED_TEST_KEY
+        ("WHISPER_API_KEY=REDACTED_TEST_KEY"WHISPER_API_KEY=REDACTED_TEST_KEY
+        # Generic *_TOKEN, *_API_KEY, *_SECRET patterns
+        ("MY_API_KEY=abc123def456", "MY_API_KEY=***REDACTED***"),
+        ("MY_SECRET_KEY=xyz789abc", "MY_SECRET_KEY=***REDACTED***"),
+        ("MY_PASSWORD=secret123", "MY_PASSWORD=***REDACTED***"),
+        # Bearer tokens
+        ("Authorization: Bearer abc123def456ghi789", "Authorization: Bearer ***REDACTED***"),
+        # Grok/GitHub style keys
+        ("gsk_REDACTED_TEST_KEY", "***REDACTED***"),
+        ("sk_REDACTED_TEST_KEY", "***REDACTED***"),
+    ])
+    def test_redact_secret_patterns(self, diff_input, expected_pattern, code_review_module):
+        redacted = diff_input
+        for pattern, replacement in code_review_module._SECRET_PATTERNS:
+            redacted = pattern.sub(replacement, redacted)
+        assert expected_pattern in redacted, f"Expected '{expected_pattern}' in '{redacted}'"
+
+    def test_redact_diff_function(self, code_review_module):
+        diff = "diff --git a/.env b/.env\n+TELEGRAM_BOT_TOKEN=REDACTED_TEST_TOKEN
+        redacted = code_review_module.redact_diff(diff)
+        assert "TELEGRAM_BOT_TOKEN=REDACTED_TEST_TOKENin redacted
+        assert "ZEN_API_KEY=REDACTED_TEST_KEYin redacted
+        assert "WHISPER_API_KEY=REDACTED_TEST_KEYin redacted
+        assert "12345:abcdef" not in redacted
+        assert "sk-secret123" not in redacted
+        assert "gsk-secret456" not in redacted
