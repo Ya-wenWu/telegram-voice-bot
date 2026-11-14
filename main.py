@@ -8,7 +8,7 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters
 
 from bot import handlers
-from bot.config import TELEGRAM_BOT_TOKEN, TMP_DIR, ZEN_API_KEY
+from bot.config import TELEGRAM_BOT_TOKEN, TMP_DIR, WHISPER_API_KEY, ZEN_API_KEY
 from bot.handlers import handle_text, handle_voice, start
 from bot.opencode_client import close_client
 from bot.redis_client import close_redis
@@ -60,19 +60,23 @@ class TokenFilter(logging.Filter):
         self._token = token
         self._replacement = f"***{token[:4]}...{token[-4:]}***" if len(token) > 8 else "***"
 
+    def _mask(self, value: object) -> object:
+        if isinstance(value, str):
+            return value.replace(self._token, self._replacement) if self._token in value else value
+        return value
+
     def filter(self, record):
         msg = record.msg if isinstance(record.msg, str) else str(record.msg)
         if self._token in msg:
             record.msg = msg.replace(self._token, self._replacement)
         if record.args:
-            filtered = []
-            for a in record.args:
-                if isinstance(a, str):
-                    filtered.append(a.replace(self._token, self._replacement))
-                else:
-                    s = str(a)
-                    filtered.append(s.replace(self._token, self._replacement) if self._token in s else a)
-            record.args = tuple(filtered)
+            if isinstance(record.args, dict):
+                # dict-style (mapping) args must stay a dict for % formatting.
+                record.args = {
+                    k: self._mask(v) for k, v in record.args.items()
+                }
+            else:
+                record.args = tuple(self._mask(a) for a in record.args)
         return True
 
 NUM_WORKERS = int(os.getenv("BOT_WORKERS", "1"))
@@ -104,7 +108,9 @@ async def post_stop(application: Application) -> None:
 def main() -> None:
     _acquire_lock()
 
-    secrets = [s for s in (TELEGRAM_BOT_TOKEN, ZEN_API_KEY) if s]
+    secrets = [
+        s for s in (TELEGRAM_BOT_TOKEN, ZEN_API_KEY, WHISPER_API_KEY) if s
+    ]
     for name in ("httpx", "httpcore", "telegram", "bot"):
         for secret in secrets:
             logging.getLogger(name).addFilter(TokenFilter(secret))
