@@ -63,7 +63,9 @@ class TokenFilter(logging.Filter):
     def _mask(self, value: object) -> object:
         if isinstance(value, str):
             return value.replace(self._token, self._replacement) if self._token in value else value
-        return value
+        # Redact string representation of non-string args (e.g. HTTP URL objects)
+        # so tokens embedded in request URLs cannot bypass masking.
+        return str(value).replace(self._token, self._replacement) if self._token in str(value) else str(value)
 
     def filter(self, record):
         msg = record.msg if isinstance(record.msg, str) else str(record.msg)
