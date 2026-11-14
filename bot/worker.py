@@ -315,11 +315,23 @@ class WorkerPool:
                             )
                     if task.is_voice:
                         pos = queue_tts(full_text, pos)
+                # Flush any remaining text after streaming ends
+                if task.is_voice and pos < len(full_text):
+                    remaining = full_text[pos:]
+                    if remaining.strip() and tts_chars < TTS_MAX_CHARS and len(tts_tasks) < TTS_MAX_SENTENCES:
+                        tts_chars += len(remaining)
+                        tts_tasks.append(asyncio.create_task(self._tts_limited(remaining)))
             except (httpx.TransportError, httpx.HTTPStatusError):
                 logger.warning(
                     "Stream failed for chat %d, falling back to non-streaming", chat_id
                 )
                 stream_ok = False
+                # Flush any partial text accumulated before stream failure
+                if task.is_voice and pos < len(full_text):
+                    remaining = full_text[pos:]
+                    if remaining.strip() and tts_chars < TTS_MAX_CHARS and len(tts_tasks) < TTS_MAX_SENTENCES:
+                        tts_chars += len(remaining)
+                        tts_tasks.append(asyncio.create_task(self._tts_limited(remaining)))
 
             # Phase 2 — fallback to non-streaming if stream failed
             if not stream_ok or not full_text:
@@ -352,6 +364,12 @@ class WorkerPool:
                         )
                     if task.is_voice:
                         pos = queue_tts(full_text, pos)
+                    # Flush any remaining text after fallback completes
+                    if pos < len(full_text):
+                        remaining = full_text[pos:]
+                        if remaining.strip() and tts_chars < TTS_MAX_CHARS and len(tts_tasks) < TTS_MAX_SENTENCES:
+                            tts_chars += len(remaining)
+                            tts_tasks.append(asyncio.create_task(self._tts_limited(remaining)))
 
             if not full_text:
                 await task.bot.edit_message_text(
