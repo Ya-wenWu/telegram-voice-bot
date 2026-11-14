@@ -2,6 +2,7 @@ import logging
 import os
 import tempfile
 import time
+from typing import Any
 
 from telegram import Update
 from telegram.ext import ContextTypes
@@ -36,33 +37,73 @@ def _rate_limited(user_id: int) -> bool:
     return False
 
 
+def _get_user_id(update: Update) -> int | None:
+    """Safely extract user ID from update."""
+    return update.effective_user.id if update.effective_user else None
+
+
+def _get_chat_id(update: Update) -> int | None:
+    """Safely extract chat ID from update."""
+    return update.effective_chat.id if update.effective_chat else None
+
+
+def _get_message_id(update: Update) -> int | None:
+    """Safely extract message ID from update."""
+    return update.message.message_id if update.message else None
+
+
+def _get_text(update: Update) -> str:
+    """Safely extract text from update message."""
+    return update.message.text or "" if update.message else ""
+
+
+def _get_voice(update: Update) -> Any | None:
+    """Safely extract voice from update message."""
+    return update.message.voice if update.message else None
+
+
+async def _reply(update: Update, text: str):
+    """Safely send a reply message and return the sent message object."""
+    if update.message:
+        return await update.message.reply_text(text)
+    return None
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not _is_allowed(update.effective_user.id):
-        await update.message.reply_text("Unauthorized.")
+    user_id = _get_user_id(update)
+    if user_id is None or not _is_allowed(user_id):
+        await _reply(update, "Unauthorized.")
         return
-    await update.message.reply_text("Send me a voice or text message and I'll reply!")
+    await _reply(update, "Send me a voice or text message and I'll reply!")
 
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user = update.effective_user
-    if not _is_allowed(user.id):
-        await update.message.reply_text("Unauthorized.")
+    user_id = _get_user_id(update)
+    if user_id is None or not _is_allowed(user_id):
+        await _reply(update, "Unauthorized.")
         return
-    if _rate_limited(user.id):
-        await update.message.reply_text("Too many requests, please wait.")
+    if _rate_limited(user_id):
+        await _reply(update, "Too many requests, please wait.")
         return
-    text = update.message.text or ""
+    text = _get_text(update)
     if len(text) > MAX_TEXT_LEN:
-        await update.message.reply_text("Message too long.")
+        await _reply(update, "Message too long.")
         return
-    if not await check_daily_quota(user.id):
-        await update.message.reply_text("今日額度已用完，請明天再試。")
+    if not await check_daily_quota(user_id):
+        await _reply(update, "今日額度已用完，請明天再試。")
+        return
+
+    chat_id = _get_chat_id(update)
+    message_id = _get_message_id(update)
+    if chat_id is None or message_id is None or worker_pool is None:
+        logger.warning("Cannot enqueue text task: missing chat_id/message_id/worker_pool")
+        await _reply(update, "⚠️ 系統忙碌，請稍後再試")
         return
 
     await worker_pool.enqueue(
         Task(
-            chat_id=update.effective_chat.id,
-            reply_to_message_id=update.message.message_id,
+            chat_id=chat_id,
+            reply_to_message_id=message_id,
             text=text,
             bot=context.bot,
         )
@@ -70,20 +111,23 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user = update.effective_user
-    if not _is_allowed(user.id):
-        await update.message.reply_text("Unauthorized.")
+    user_id = _get_user_id(update)
+    if user_id is None or not _is_allowed(user_id):
+        await _reply(update, "Unauthorized.")
         return
-    if _rate_limited(user.id):
-        await update.message.reply_text("Too many requests, please wait.")
+    if _rate_limited(user_id):
+        await _reply(update, "Too many requests, please wait.")
         return
 
-    voice = update.message.voice
-    if voice.file_size and voice.file_size > MAX_VOICE_BYTES:
-        await update.message.reply_text("Voice file too large.")
+    voice = _get_voice(update)
+    if voice is None:
+        await _reply(update, "❌ 無法取得語音檔案")
         return
-    if not await check_daily_quota(user.id):
-        await update.message.reply_text("今日額度已用完，請明天再試。")
+    if voice.file_size and voice.file_size > MAX_VOICE_BYTES:
+        await _reply(update, "Voice file too large.")
+        return
+    if not await check_daily_quota(user_id):
+        await _reply(update, "今日額度已用完，請明天再試。")
         return
 
     TMP_DIR.mkdir(parents=True, exist_ok=True)
@@ -92,7 +136,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     ) as tmp:
         tmp_path = tmp.name
 
-    msg = await update.message.reply_text("⏳ Transcribing...")
+    msg = await _reply(update, "⏳ Transcribing...")
 
     try:
         file = await voice.get_file()
@@ -100,7 +144,8 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         text = await transcribe(tmp_path)
     except Exception:
         logger.exception("Whisper failed")
-        await msg.edit_text("❌ 語音轉錄失敗，請稍後再試。")
+        if msg:
+            await msg.edit_text("❌ 語音轉錄失敗，請稍後再試。")
         return
     finally:
         try:
@@ -108,11 +153,19 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         except OSError:
             pass
 
-    await msg.edit_text(f"You: {text}\n\n⏳ Thinking...")
+    if msg:
+        await msg.edit_text(f"You: {text}\n\n⏳ Thinking...")
+
+    chat_id = _get_chat_id(update)
+    message_id = _get_message_id(update)
+    if chat_id is None or message_id is None or worker_pool is None:
+        logger.warning("Cannot enqueue voice task: missing chat_id/message_id/worker_pool")
+        return
+
     await worker_pool.enqueue(
         Task(
-            chat_id=update.effective_chat.id,
-            reply_to_message_id=update.message.message_id,
+            chat_id=chat_id,
+            reply_to_message_id=message_id,
             text=text,
             bot=context.bot,
             is_voice=True,
