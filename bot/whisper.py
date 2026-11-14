@@ -5,7 +5,7 @@ from typing import BinaryIO
 
 import httpx
 
-import bot
+import bot.http_client
 from bot.config import (
     WHISPER_API_BASE,
     WHISPER_API_KEY,
