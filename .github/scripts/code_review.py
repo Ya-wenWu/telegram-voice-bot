@@ -146,7 +146,11 @@ def sanitize_diff_input(diff: str) -> str:
     # Collapse excessive whitespace to reduce injection surface
     neutralized = re.sub(r'\n{3,}', '\n\n', neutralized)
     # Escape leading characters that could start directives
-    neutralized = re.sub(r'^(?m)(ignore|disregard|override|bypass|forget|system|assistant|user)\b', r'[NEUTRALIZED:\1]', neutralized)
+    neutralized = re.sub(
+        r'(?m)^(ignore|disregard|override|bypass|forget|system|assistant|user)\b',
+        r'[NEUTRALIZED:\1]',
+        neutralized,
+    )
     return neutralized
 
 
