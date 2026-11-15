@@ -77,20 +77,41 @@ Brief overall assessment.
 - Remember: no perfect code, only better code"""
 
 _SECRET_PATTERNS = [
-    # Known project secret env var names (explicit coverage)
-    (re.compile(r'(?im)(telegram[_-]?bot[_-]?token|zen[_-]?api[_-]?key|whisper[_-]?api[_-]?key)\s*[:=]\s*["\']?([^"\'\s]+)'), r'\1=***REDACTED***'),
-    # Generic secret env var names (*_TOKEN, *_API_KEY, *_SECRET, *_PASSWORD, etc.)
-    (re.compile(r'(?im)([A-Z][A-Z0-9_]*(?:_TOKEN|_API_KEY|_SECRET|_PASSWORD|_PASSWD|_PWD|_CREDENTIAL|_PRIVATE_KEY|_SECRET_KEY|_ACCESS_KEY|_AUTH_KEY))\s*[:=]\s*["\']?([^"\'\s]+)'), r'\1=***REDACTED***'),
-    # Common secret assignment patterns with = or :=
-    (re.compile(r'(?im)(api[_-]?key|secret[_-]?key|access[_-]?token|auth[_-]?token|private[_-]?key|password|passwd|pwd)\s*[:=]\s*["\']?([^"\'\s]+)'), r'\1=***REDACTED***'),
-    # Bearer tokens
+    # 1. Known project secret names (ENV, YAML, INI, and quoted JSON assignments)
+    (
+        re.compile(
+            r'(?im)(["\']?(?:telegram[_-]?bot[_-]?token|zen[_-]?api[_-]?key|whisper[_-]?api[_-]?key)["\']?\s*[:=]\s*)(?:(["\'])(?:\\.|(?!\2).)*\2|[^\s,\}\]]+)'
+        ),
+        r'\1***REDACTED***',
+    ),
+    # 2. Standalone Telegram Bot Token format (e.g. in URLs or raw strings without key prefix)
+    (
+        re.compile(r'\b\d{8,10}:[A-Za-z0-9_-]{35}\b'),
+        '***REDACTED***',
+    ),
+    # 3. Generic secret env var names (*_TOKEN, *_API_KEY, *_SECRET, *_PASSWORD, etc.)
+    (
+        re.compile(
+            r'(?im)(["\']?[A-Z][A-Z0-9_]*(?:_TOKEN|_API_KEY|_SECRET|_PASSWORD|_PASSWD|_PWD|_CREDENTIAL|_PRIVATE_KEY|_SECRET_KEY|_ACCESS_KEY|_AUTH_KEY)["\']?\s*[:=]\s*)(?:(["\'])(?:\\.|(?!\2).)*\2|[^\s,\}\]]+)'
+        ),
+        r'\1***REDACTED***',
+    ),
+    # 4. Common secret assignment patterns with = or := or : (supports quoted JSON keys & values)
+    (
+        re.compile(
+            r'(?im)(["\']?(?:api[_-]?key|secret[_-]?key|access[_-]?token|auth[_-]?token|private[_-]?key|password|passwd|pwd)["\']?\s*[:=]\s*)(?:(["\'])(?:\\.|(?!\2).)*\2|[^\s,\}\]]+)'
+        ),
+        r'\1***REDACTED***',
+    ),
+    # 5. Bearer tokens
     (re.compile(r'(?i)Bearer\s+[A-Za-z0-9\-_=\.]+'), 'Bearer ***REDACTED***'),
-    # Generic long hex/base64-looking tokens (ghp_, gsk_, sk-, oc_s, etc.)
+    # 6. Generic long hex/base64-looking tokens (ghp_, gsk_, sk-, oc_s, etc.)
     (re.compile(r'(?:ghp_|gsk_|sk-|oc_s|xoxb-)[A-Za-z0-9\-]{10,}'), '***REDACTED***'),
-    # Private key blocks - split markers to avoid triggering secret scanners on the pattern itself
-    (re.compile(r'(?is)-----BEGIN\s+[A-Z\s]+PRIVATE\s+KEY-----.*?-----END\s+[A-Z\s]+PRIVATE\s+KEY-----'), '-----BEGIN REDACTED\nPRIVATE KEY-----\n-----END REDACTED\nPRIVATE KEY-----'),
-    # JSON-style secret values
-    (re.compile(r'(?im)("?(api[_-]?key|secret[_-]?key|access[_-]?token|auth[_-]?token|private[_-]?key|password|passwd|pwd)"?\s*[:=]\s*)["\']([^"\']{8,})["\']'), r'\1***REDACTED***'),
+    # 7. Private key blocks - split markers to avoid triggering secret scanners on the pattern itself
+    (
+        re.compile(r'(?is)-----BEGIN\s+[A-Z\s]+PRIVATE\s+KEY-----.*?-----END\s+[A-Z\s]+PRIVATE\s+KEY-----'),
+        '-----BEGIN REDACTED\nPRIVATE KEY-----\n-----END REDACTED\nPRIVATE KEY-----',
+    ),
 ]
 
 
