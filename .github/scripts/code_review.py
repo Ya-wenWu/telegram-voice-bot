@@ -105,14 +105,21 @@ _SECRET_PATTERNS = [
     ),
     # 5. Bearer tokens
     (re.compile(r'(?i)Bearer\s+[A-Za-z0-9\-_=\.]+'), 'Bearer ***REDACTED***'),
-    # 6. Generic long hex/base64-looking tokens (ghp_, gsk_, sk-, oc_s, etc.)
-    (re.compile(r'(?:ghp_|gsk_|sk-|oc_s|xoxb-)[A-Za-z0-9\-]{10,}'), '***REDACTED***'),
+    # 6. Generic long hex/base64-looking tokens (ghp_, gsk_, sk-/sk_, oc_s, etc.)
+    #    The lookbehind keeps identifiers such as ``task_manager`` intact while
+    #    still catching standalone tokens at the start of a line or after a
+    #    non-word character.
+    (
+        re.compile(r'(?<![A-Za-z0-9_])(?:ghp_|gsk_|sk[_-]|oc_s|xoxb-)[A-Za-z0-9\-]{10,}'),
+        '***REDACTED***',
+    ),
     # 7. Private key blocks - split markers to avoid triggering secret scanners on the pattern itself
     (
         re.compile(r'(?is)-----BEGIN\s+[A-Z\s]+PRIVATE\s+KEY-----.*?-----END\s+[A-Z\s]+PRIVATE\s+KEY-----'),
         '-----BEGIN REDACTED\nPRIVATE KEY-----\n-----END REDACTED\nPRIVATE KEY-----',
     ),
 ]
+
 
 def read_diff(path: str) -> str:
     with open(path) as f:
@@ -147,7 +154,7 @@ def sanitize_diff_input(diff: str) -> str:
     neutralized = re.sub(r'\n{3,}', '\n\n', neutralized)
     # Escape leading characters that could start directives
     neutralized = re.sub(
-        r'(?m)^(ignore|disregard|override|bypass|forget|system|assistant|user)\b',
+        r'(?im)^(ignore|disregard|override|bypass|forget|system|assistant|user)\b',
         r'[NEUTRALIZED:\1]',
         neutralized,
     )
