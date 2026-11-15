@@ -48,7 +48,8 @@ spec.loader.exec_module(code_review)
         ),
         # 5. 通用機密變數（JSON 與 ENV 格式）
         (
-            '+{"access_token": "ghp_1234567890abcdefghij"}',
+            # 值刻意用低熵假字串，避免 gitleaks generic-api-key 誤報
+            '+{"access_token": "ghp_00000000000000000000"}',
             '+{"access_token": ***REDACTED***}',
         ),
     ],

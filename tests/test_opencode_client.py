@@ -139,14 +139,14 @@ class TestRedactDiff:
         [
             # 已知的專案機密環境變數名稱
             ("TELEGRAM_BOT_TOKEN=12345:abcdef", "TELEGRAM_BOT_TOKEN=***REDACTED***"),
-            ("ZEN_API_KEY=test_zen_key_123", "ZEN_API_KEY=***REDACTED***"),
-            ("WHISPER_API_KEY=test_whisper_key_123", "WHISPER_API_KEY=***REDACTED***"),
+            ("ZEN_API_KEY=fake0000000000000", "ZEN_API_KEY=***REDACTED***"),
+            ("WHISPER_API_KEY=fake0000000000001", "WHISPER_API_KEY=***REDACTED***"),
             # 通用的 *_TOKEN、*_API_KEY、*_SECRET 模式
-            ("MY_API_KEY=abc123def456", "MY_API_KEY=***REDACTED***"),
-            ("MY_SECRET_KEY=xyz789abc", "MY_SECRET_KEY=***REDACTED***"),
-            ("MY_PASSWORD=secret123", "MY_PASSWORD=***REDACTED***"),
+            ("MY_API_KEY=fake0000000000002", "MY_API_KEY=***REDACTED***"),
+            ("MY_SECRET_KEY=fake0000000000003", "MY_SECRET_KEY=***REDACTED***"),
+            ("MY_PASSWORD=fake0000000000004", "MY_PASSWORD=***REDACTED***"),
             # Bearer 權杖
-            ("Authorization: Bearer abc123def456ghi789", "Authorization: Bearer ***REDACTED***"),
+            ("Authorization: Bearer fake0000000000005", "Authorization: Bearer ***REDACTED***"),
             # Grok/GitHub 風格的密鑰
             ("gsk_123456789abcdef", "***REDACTED***"),
             ("sk_123456789abcdef", "***REDACTED***"),
@@ -162,14 +162,14 @@ class TestRedactDiff:
         diff = (
             "diff --git a/.env b/.env\n"
             "+TELEGRAM_BOT_TOKEN=12345:abcdef\n"
-            "+ZEN_API_KEY=test_zen_key_123\n"
-            "+WHISPER_API_KEY=test_whisper_key_123\n"
+            "+ZEN_API_KEY=fake0000000000000\n"
+            "+WHISPER_API_KEY=fake0000000000001\n"
             "+sk_123456789abcdef\n"
             "+gsk_123456789abcdef"
         )
         redacted = code_review_module.redact_diff(diff)
         assert "12345:abcdef" not in redacted
-        assert "test_zen_key_123" not in redacted
-        assert "test_whisper_key_123" not in redacted
+        assert "fake0000000000000" not in redacted
+        assert "fake0000000000001" not in redacted
         assert "sk_123456789abcdef" not in redacted
         assert "gsk_123456789abcdef" not in redacted
