@@ -62,7 +62,7 @@ async def check_daily_quota(
 
         _disabled_until = time.monotonic() + _FAILURE_COOLDOWN_SEC
         logger.warning(
-            "Redis quota check failed; allowing request for %ss: %s",
+            "Redis quota check failed; allowing request for %ss (error_type=%s)",
             int(_FAILURE_COOLDOWN_SEC),
             type(exc).__name__,
         )
