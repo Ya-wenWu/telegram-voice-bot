@@ -18,7 +18,8 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - uses: anomalyco/opencode/github@d759c548aab33a7a6f5171cbeab40a59e91d90aa
+      # pinned 2026-03-25，等同原 @latest；dev 分支無 github/action.yml
+      - uses: anomalyco/opencode/github@77fc88c8ade8e5a620ebbe1197f3a572d29ae91a
         env:
           OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
