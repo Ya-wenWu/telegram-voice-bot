@@ -148,7 +148,7 @@ async def _enqueue_voice_task(
         preview = text if len(text) <= 3800 else text[:3800] + "..."
         try:
             await msg.edit_text(f"You: {preview}\n\n⏳ Thinking...")
-        except Exception:  # noqa: BLE001 - cosmetic preview edit must not block enqueue
+        except Exception:
             logger.debug("Failed to edit voice preview message", exc_info=True)
 
     chat_id = _get_chat_id(update)
@@ -168,6 +168,15 @@ async def _enqueue_voice_task(
             is_voice=True,
         )
     )
+
+
+async def _notify_empty_transcript(msg: Any) -> None:
+    """Notify user when voice transcription produces empty text."""
+    if msg:
+        try:
+            await msg.edit_text("⚠️ 無法辨識語音內容，請重新錄製。")
+        except Exception:
+            logger.debug("Failed to edit empty transcript message", exc_info=True)
 
 
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -197,11 +206,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
 
     if not text or not text.strip():
-        if msg:
-            try:
-                await msg.edit_text("⚠️ 無法辨識語音內容，請重新錄製。")
-            except Exception:  # noqa: BLE001 - best-effort status edit
-                logger.debug("Failed to edit empty transcript message", exc_info=True)
+        await _notify_empty_transcript(msg)
         return
 
     await _enqueue_voice_task(update, context, msg, text)
