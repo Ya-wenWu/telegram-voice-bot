@@ -1,7 +1,9 @@
+import asyncio
 import logging
 import os
 import tempfile
 import time
+from pathlib import Path
 from typing import Any
 
 from telegram import Update
@@ -128,22 +130,29 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 
 async def _download_and_transcribe(voice: Any) -> str:
-    """Download voice file to a temp path, transcribe it, and clean up."""
-    TMP_DIR.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile(dir=TMP_DIR, suffix=".ogg", delete=False) as tmp:
-        tmp_path = tmp.name
+    """Download voice file to disk, read bytes asynchronously, and clean up."""
+    await asyncio.to_thread(TMP_DIR.mkdir, parents=True, exist_ok=True)
+    tmp_path = await asyncio.to_thread(_create_temp_voice_path)
 
     try:
         file = await voice.get_file()
         await file.download_to_drive(tmp_path)
-        if os.path.getsize(tmp_path) > MAX_VOICE_BYTES:
+        size = await asyncio.to_thread(os.path.getsize, tmp_path)
+        if size > MAX_VOICE_BYTES:
             raise ValueError("Voice file exceeds MAX_VOICE_BYTES after download")
-        return await transcribe(tmp_path)
+        audio_bytes = await asyncio.to_thread(Path(tmp_path).read_bytes)
+        return await transcribe(audio_bytes)
     finally:
         try:
-            os.unlink(tmp_path)
+            await asyncio.to_thread(os.unlink, tmp_path)
         except OSError:
             pass
+
+
+def _create_temp_voice_path() -> str:
+    """Create a temporary file path synchronously for worker thread usage."""
+    with tempfile.NamedTemporaryFile(dir=TMP_DIR, suffix=".ogg", delete=False) as tmp:
+        return tmp.name
 
 
 async def _enqueue_voice_task(
@@ -175,6 +184,15 @@ async def _enqueue_voice_task(
     )
 
 
+def _check_voice_file(voice: Any | None) -> str | None:
+    """Validate voice attachment existence and file size."""
+    if voice is None:
+        return "❌ 無法取得語音檔案"
+    if not voice.file_size or voice.file_size > MAX_VOICE_BYTES:
+        return "Voice file too large or unknown size."
+    return None
+
+
 async def _validate_voice_request(update: Update) -> tuple[Any | None, str | None]:
     """Validate auth, rate limit, voice attachment, size, and daily quota."""
     user_id, reason = _check_auth_and_throttle(update)
@@ -182,10 +200,10 @@ async def _validate_voice_request(update: Update) -> tuple[Any | None, str | Non
         return None, reason or "Unauthorized."
 
     voice = _get_voice(update)
-    if voice is None:
-        return None, "❌ 無法取得語音檔案"
-    if voice.file_size and voice.file_size > MAX_VOICE_BYTES:
-        return None, "Voice file too large."
+    voice_error = _check_voice_file(voice)
+    if voice_error:
+        return None, voice_error
+
     if not await check_daily_quota(user_id):
         return None, "今日額度已用完，請明天再試。"
 
@@ -194,8 +212,8 @@ async def _validate_voice_request(update: Update) -> tuple[Any | None, str | Non
 
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     voice, error_msg = await _validate_voice_request(update)
-    if error_msg or voice is None:
-        await _reply(update, error_msg or "❌ 無法取得語音檔案")
+    if error_msg:
+        await _reply(update, error_msg)
         return
 
     msg = await _reply(update, "⏳ Transcribing...")
