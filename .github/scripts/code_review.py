@@ -309,10 +309,26 @@ def main():
     diff = sanitize_diff_input(diff)
 
     try:
-        review = call_gemini_api(api_key, diff, filename)
-        review = validate_review_output(review)
-        review = policy_filter_review_output(review)
-        print(review)
+        raw_review = call_gemini_api(api_key, diff, filename)
+        if not raw_review or not raw_review.strip():
+            print("❌ Empty review output from Gemini API.", file=sys.stderr)
+            sys.exit(1)
+
+        validated_review = validate_review_output(raw_review)
+        if (
+            not validated_review
+            or not validated_review.strip()
+            or validated_review.startswith("⚠️ Review output failed safety validation")
+        ):
+            print("❌ Review output failed safety validation.", file=sys.stderr)
+            sys.exit(1)
+
+        filtered_review = policy_filter_review_output(validated_review)
+        if not filtered_review or not filtered_review.strip():
+            print("❌ Review output became empty after policy filtering.", file=sys.stderr)
+            sys.exit(1)
+
+        print(filtered_review)
     except httpx.HTTPStatusError as e:
         if e.response.status_code == 429:
             print("⚠️ Gemini API rate limit exceeded. Skipping AI review this time.")
