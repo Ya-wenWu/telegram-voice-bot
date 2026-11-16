@@ -1,51 +1,92 @@
+import fcntl
 import logging
 import os
 import sys
+from pathlib import Path
 
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters
 
 from bot import handlers
-from bot.config import TELEGRAM_BOT_TOKEN
+from bot.config import TELEGRAM_BOT_TOKEN, TMP_DIR, WHISPER_API_KEY, ZEN_API_KEY
 from bot.handlers import handle_text, handle_voice, start
-from bot.opencode_client import close_client
+from bot.http_client import close_client
+from bot.redis_client import close_redis
 from bot.worker import WorkerPool
+
+LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+
+
+class TokenRedactingFormatter(logging.Formatter):
+    """Formatting layer that redacts secrets from all log output.
+
+    Applied at the output handler/formatter level so that descendant logger
+    records and formatted exception tracebacks are sanitized before being
+    emitted to the stream.
+    """
+
+    def __init__(self, tokens: list[str], *args, **kwargs):
+        kwargs.setdefault("fmt", LOG_FORMAT)
+        super().__init__(*args, **kwargs)
+        self._tokens = [t for t in tokens if t]
+
+    def format(self, record: logging.LogRecord) -> str:
+        msg = super().format(record)
+        for token in self._tokens:
+            if token and token in msg:
+                replacement = (
+                    f"***{token[:4]}...{token[-4:]}***" if len(token) > 20 else "***"
+                )
+                msg = msg.replace(token, replacement)
+        return msg
+
 
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    format=LOG_FORMAT,
     stream=sys.stdout,
 )
 
+# Apply token redaction at the output handler/formatter level so that
+# descendant logger records and formatted exception tracebacks are sanitized
+# before being emitted.
+_secrets = [s for s in (TELEGRAM_BOT_TOKEN, ZEN_API_KEY, WHISPER_API_KEY) if s]
+if _secrets:
+    _handler = logging.StreamHandler(sys.stdout)
+    _handler.setFormatter(TokenRedactingFormatter(_secrets, fmt=LOG_FORMAT))
+    _root = logging.getLogger()
+    _root.handlers = [_handler]
+
 logger = logging.getLogger(__name__)
 
-LOCK_FILE = "/tmp/telegram-voice-bot.lock"
+_STATE_DIR = Path.home() / ".local" / "state" / "telegram-voice-bot"
+_STATE_DIR.mkdir(parents=True, exist_ok=True)
+TMP_DIR.mkdir(parents=True, exist_ok=True)
+LOCK_FILE = str(_STATE_DIR / "bot.lock")
+_LOCK_FD = None
 
 
-def _aquire_lock() -> None:
+def _acquire_lock() -> None:
+    global _LOCK_FD
     try:
-        if os.path.exists(LOCK_FILE):
-            with open(LOCK_FILE) as f:
-                old_pid = int(f.read().strip())
-            if os.path.exists(f"/proc/{old_pid}"):
-                logger.error("Another instance (PID %d) is already running", old_pid)
-                sys.exit(1)
-            logger.warning("Stale lock file found (PID %d not running), overwriting", old_pid)
-        with open(LOCK_FILE, "w") as f:
-            f.write(str(os.getpid()))
-    except (OSError, ValueError) as exc:
+        fd = os.open(LOCK_FILE, os.O_RDWR | os.O_CREAT, 0o600)
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        os.ftruncate(fd, 0)
+        os.write(fd, str(os.getpid()).encode())
+        _LOCK_FD = fd
+    except (OSError, BlockingIOError) as exc:
         logger.error("Failed to acquire lock: %s", exc)
         sys.exit(1)
 
 
 def _release_lock() -> None:
+    global _LOCK_FD
     try:
-        if os.path.exists(LOCK_FILE):
-            with open(LOCK_FILE) as f:
-                pid = int(f.read().strip())
-            if pid == os.getpid():
-                os.unlink(LOCK_FILE)
-    except (OSError, ValueError):
+        if _LOCK_FD is not None:
+            fcntl.flock(_LOCK_FD, fcntl.LOCK_UN)
+            os.close(_LOCK_FD)
+            _LOCK_FD = None
+    except OSError:
         pass
 
 
@@ -53,25 +94,40 @@ class TokenFilter(logging.Filter):
     def __init__(self, token: str):
         super().__init__()
         self._token = token
-        self._replacement = f"***{token[:4]}...{token[-4:]}***" if len(token) > 8 else "***"
+        self._replacement = (
+            f"***{token[:4]}...{token[-4:]}***" if len(token) > 20 else "***"
+        )
+
+    def _mask(self, value: object) -> object:
+        if isinstance(value, str):
+            return (
+                value.replace(self._token, self._replacement)
+                if self._token in value
+                else value
+            )
+        # Redact string representation of non-string args (e.g. HTTP URL objects)
+        # so tokens embedded in request URLs cannot bypass masking.
+        return (
+            str(value).replace(self._token, self._replacement)
+            if self._token in str(value)
+            else str(value)
+        )
 
     def filter(self, record):
         msg = record.msg if isinstance(record.msg, str) else str(record.msg)
         if self._token in msg:
             record.msg = msg.replace(self._token, self._replacement)
         if record.args:
-            filtered = []
-            for a in record.args:
-                if isinstance(a, str):
-                    filtered.append(a.replace(self._token, self._replacement))
-                else:
-                    s = str(a)
-                    filtered.append(s.replace(self._token, self._replacement) if self._token in s else a)
-            record.args = tuple(filtered)
+            if isinstance(record.args, dict):
+                # dict-style (mapping) args must stay a dict for % formatting.
+                record.args = {k: self._mask(v) for k, v in record.args.items()}
+            else:
+                record.args = tuple(self._mask(a) for a in record.args)
         return True
 
-NUM_WORKERS = int(os.getenv("BOT_WORKERS", "5"))
-CONCURRENT_UPDATES = int(os.getenv("CONCURRENT_UPDATES", "8"))
+
+NUM_WORKERS = int(os.getenv("BOT_WORKERS", "1"))
+CONCURRENT_UPDATES = int(os.getenv("CONCURRENT_UPDATES", "1"))
 
 
 async def post_init(application: Application) -> None:
@@ -90,15 +146,13 @@ async def post_stop(application: Application) -> None:
         await handlers.worker_pool.stop()
         logger.info("Worker pool stopped")
     await close_client()
+    await close_redis()
     logger.info("HTTP client closed")
     _release_lock()
 
 
 def main() -> None:
-    _aquire_lock()
-
-    for name in ("httpx", "httpcore", "telegram"):
-        logging.getLogger(name).addFilter(TokenFilter(TELEGRAM_BOT_TOKEN))
+    _acquire_lock()
 
     if not TELEGRAM_BOT_TOKEN or TELEGRAM_BOT_TOKEN == "your_token_here":
         logger.error("TELEGRAM_BOT_TOKEN is not set!")

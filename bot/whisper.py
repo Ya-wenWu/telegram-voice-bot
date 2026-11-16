@@ -1,98 +1,86 @@
 import asyncio
 import logging
 import os
-import tempfile
+from typing import BinaryIO
 
 import httpx
 
-from bot.config import WHISPER_URL
+import bot.http_client
+from bot.config import (
+    WHISPER_API_BASE,
+    WHISPER_API_KEY,
+    WHISPER_LANGUAGE,
+    WHISPER_MODEL,
+    WHISPER_URL,
+)
+from bot.retry import request_with_retry
 
 logger = logging.getLogger(__name__)
 
-MAX_CHUNK_SEC = 30
+# Common remote APIs cap uploads at 25 MB.
+MAX_AUDIO_BYTES = 25 * 1024 * 1024
 
 
-async def transcribe(audio_bytes: bytes) -> str:
-    duration = await _probe_duration(audio_bytes)
-    if duration <= MAX_CHUNK_SEC:
-        return await _transcribe_chunk(audio_bytes)
-    chunks = await _split_audio(audio_bytes, MAX_CHUNK_SEC)
-    texts = []
-    for chunk in chunks:
-        text = await _transcribe_chunk(chunk)
-        texts.append(text)
-        logger.info("Chunk done (%d/%d): %d chars", len(texts), len(chunks), len(text))
-    return "".join(texts)
+async def transcribe(audio: bytes | str | os.PathLike[str]) -> str:
+    """Transcribe audio bytes or a file path via an OpenAI-compatible API.
 
+    Passing a path is preferred for large messages: the file is streamed to the
+    API instead of being copied into memory multiple times.
+    """
+    if isinstance(audio, (bytes, bytearray)):
+        if not audio:
+            return ""
+        if len(audio) > MAX_AUDIO_BYTES:
+            raise ValueError("Audio exceeds 25 MB limit")
+        return await _transcribe_chunk(bytes(audio))
 
-async def _probe_duration(audio_bytes: bytes) -> float:
-    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".ogg")
+    path = os.fspath(audio)
+    size = os.path.getsize(path)
+    if size == 0:
+        return ""
+    if size > MAX_AUDIO_BYTES:
+        raise ValueError("Audio exceeds 25 MB limit")
+    fh = await asyncio.to_thread(open, path, "rb")
     try:
-        tmp.write(audio_bytes)
-        tmp.close()
-        proc = await asyncio.create_subprocess_exec(
-            "ffprobe", "-v", "quiet",
-            "-show_entries", "format=duration",
-            "-of", "csv=p=0",
-            tmp.name,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        out, _ = await proc.communicate()
-        return float(out.decode().strip())
+        return await _transcribe_chunk(fh)
     finally:
-        os.unlink(tmp.name)
+        await asyncio.to_thread(fh.close)
 
 
-async def _split_audio(audio_bytes: bytes, chunk_sec: int) -> list[bytes]:
-    tmpdir = tempfile.mkdtemp(prefix="whisper_split_")
-    try:
-        in_path = os.path.join(tmpdir, "input.ogg")
-        with open(in_path, "wb") as f:
-            f.write(audio_bytes)
-        out_pattern = os.path.join(tmpdir, "chunk_%03d.ogg")
-        proc = await asyncio.create_subprocess_exec(
-            "ffmpeg", "-y", "-i", in_path,
-            "-f", "segment",
-            "-segment_time", str(chunk_sec),
-            "-c", "copy",
-            "-map", "0",
-            "-loglevel", "quiet",
-            out_pattern,
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
+def _endpoint() -> tuple[str, dict[str, str]]:
+    """Return (url, headers), preferring a self-hosted WHISPER_URL when set."""
+    if WHISPER_URL:
+        return (
+            f"{WHISPER_URL.rstrip('/')}/v1/audio/transcriptions",
+            {},
         )
-        ret = await proc.wait()
-        if ret != 0:
-            logger.warning("ffmpeg segment failed (ret=%d), falling back to full audio", ret)
-            return [audio_bytes]
-        chunks = []
-        i = 0
-        while True:
-            path = os.path.join(tmpdir, f"chunk_{i:03d}.ogg")
-            if not os.path.exists(path):
-                break
-            with open(path, "rb") as f:
-                chunks.append(f.read())
-            i += 1
-        if not chunks:
-            logger.warning("ffmpeg produced no segments, using full audio")
-            return [audio_bytes]
-        return chunks
-    finally:
-        for fname in os.listdir(tmpdir):
-            os.unlink(os.path.join(tmpdir, fname))
-        os.rmdir(tmpdir)
-
-
-async def _transcribe_chunk(chunk: bytes) -> str:
-    files = {"file": ("audio.ogg", chunk, "audio/ogg")}
-    data = {"model": "base", "language": "zh", "response_format": "json"}
-    async with httpx.AsyncClient(timeout=120) as client:
-        resp = await client.post(
-            f"{WHISPER_URL}/v1/audio/transcriptions",
-            files=files,
-            data=data,
+    if not WHISPER_API_KEY:
+        raise RuntimeError(
+            "WHISPER_API_KEY is not set; configure it or set WHISPER_URL "
+            "to use a self-hosted transcription server."
         )
-        resp.raise_for_status()
-        return resp.json()["text"]
+    return (
+        f"{WHISPER_API_BASE.rstrip('/')}/audio/transcriptions",
+        {"Authorization": f"Bearer {WHISPER_API_KEY}"},
+    )
+
+
+async def _transcribe_chunk(chunk: bytes | BinaryIO) -> str:
+    url, headers = _endpoint()
+    data = {"model": WHISPER_MODEL, "response_format": "json"}
+    if WHISPER_LANGUAGE:
+        data["language"] = WHISPER_LANGUAGE
+
+    async def _send() -> httpx.Response:
+        # File handles are consumed by the first upload; rewind so a retry
+        # does not send an empty body.
+        if hasattr(chunk, "seek"):
+            chunk.seek(0)
+        files = {"file": ("audio.ogg", chunk, "audio/ogg")}
+        return await bot.http_client.get_client().post(
+            url, files=files, data=data, headers=headers
+        )
+
+    resp = await request_with_retry(_send, label="Transcription")
+    resp.raise_for_status()
+    return resp.json().get("text", "")
