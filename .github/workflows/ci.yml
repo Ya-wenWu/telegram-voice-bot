@@ -27,7 +27,7 @@ jobs:
       - name: Dependency audit
         run: |
           pip install pip-audit==2.7.3
-          pip-audit --strict 2>&1 || true
+          pip-audit --strict -r requirements.txt
 
   dependency-review:
     runs-on: ubuntu-latest
@@ -56,13 +56,15 @@ jobs:
           pip install -r requirements.txt
           pip install ruff pytest pytest-cov pytest-asyncio
 
-      - name: Lint
-        run: ruff check .
+      - name: Lint & Format check
+        run: |
+          ruff check .
+          ruff format --check .
 
       - name: Type check
         run: |
           pip install mypy==1.11.2
-          mypy src/ --strict || true
+          mypy bot/ main.py --ignore-missing-imports
 
       - name: Test
         run: python -m pytest -v --cov
