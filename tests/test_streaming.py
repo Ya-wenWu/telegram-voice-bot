@@ -6,13 +6,18 @@ import pytest
 from bot.opencode_client import chat_stream
 from bot.worker import _concat_mp3, _scan_sentences, _split_sentences
 
-
 # ── _split_sentences ────────────────────────────────────────────────────────
+
 
 class TestSplitSentences:
     def test_chinese_sentence_endings(self):
         result = _split_sentences("你好。請問有什麼需要幫忙的嗎？第一個句子。第二句！")
-        assert result == ["你好。", "請問有什麼需要幫忙的嗎？", "第一個句子。", "第二句！"]
+        assert result == [
+            "你好。",
+            "請問有什麼需要幫忙的嗎？",
+            "第一個句子。",
+            "第二句！",
+        ]
 
     def test_english_sentence_endings(self):
         result = _split_sentences("Hello. How are you? I'm fine! Done\nNext")
@@ -60,6 +65,7 @@ class TestSplitSentences:
 
 # ── _concat_mp3 ─────────────────────────────────────────────────────────────
 
+
 @pytest.mark.asyncio()
 async def test_concat_single_part_returns_as_is():
     result = await _concat_mp3([b"single_data"])
@@ -76,7 +82,7 @@ async def test_concat_empty_list_returns_empty():
 async def test_concat_multiple_parts_with_ffmpeg():
     async def _mock_ffmpeg(*args, **kwargs):
         out_path = args[-1]
-        with open(out_path, "wb") as f:
+        with open(out_path, "wb") as f:  # noqa: ASYNC230
             f.write(b"mocked_concat_result")
         proc = AsyncMock()
         proc.wait.return_value = 0
@@ -101,16 +107,20 @@ async def test_concat_ffmpeg_failure_falls_back():
 
 @pytest.mark.asyncio()
 async def test_concat_missing_ffmpeg_raises():
-    with patch("bot.worker.asyncio.create_subprocess_exec", side_effect=FileNotFoundError):
-        with pytest.raises(FileNotFoundError):
-            await _concat_mp3([b"a", b"b"])
+    with (
+        patch(
+            "bot.worker.asyncio.create_subprocess_exec", side_effect=FileNotFoundError
+        ),
+        pytest.raises(FileNotFoundError),
+    ):
+        await _concat_mp3([b"a", b"b"])
 
 
 @pytest.mark.asyncio()
 async def test_concat_large_number_of_parts():
     async def _mock_ffmpeg(*args, **kwargs):
         out_path = args[-1]
-        with open(out_path, "wb") as f:
+        with open(out_path, "wb") as f:  # noqa: ASYNC230
             f.write(b"mocked_concat_result")
         proc = AsyncMock()
         proc.wait.return_value = 0
@@ -124,18 +134,26 @@ async def test_concat_large_number_of_parts():
 
 # ── chat_stream SSE parsing ─────────────────────────────────────────────────
 
+
 class TestChatStream:
     """Chat stream uses httpx.AsyncClient with streaming POST.
-    
+
     We mock by replacing httpx.AsyncClient with a factory
     that returns a mock client with a mock stream().
     """
 
+    @pytest.fixture(autouse=True)
+    def _reset_shared_client(self):
+        import bot.http_client
+
+        bot.http_client._client = None
+        yield
+        bot.http_client._client = None
+
     @pytest.fixture()
     def mock_http(self):
-        with patch("bot.opencode_client.httpx.AsyncClient") as MockClient:
-            mock_client = MagicMock()
-            MockClient.return_value.__aenter__.return_value = mock_client
+        mock_client = MagicMock()
+        with patch("bot.http_client.get_client", return_value=mock_client):
             yield mock_client
 
     def _make_stream_cm(
@@ -146,7 +164,7 @@ class TestChatStream:
         aiter_lines_fn=None,
     ):
         """Create a callable that acts like client.stream() returning a context manager.
-        
+
         Provide *lines* for a simple line-by-line async generator,
         or *aiter_lines_fn* for custom stream behavior (e.g. raising an error mid-stream).
         """
@@ -155,23 +173,28 @@ class TestChatStream:
         if aiter_lines_fn:
             mock_response.aiter_lines = aiter_lines_fn
         elif lines is not None:
+
             async def _gen():
                 for line in lines:
                     yield line
+
             mock_response.aiter_lines = _gen
         mock_stream_value = MagicMock()
-        mock_stream_value.__aenter__.return_value = mock_response
+        mock_stream_value.__aenter__ = AsyncMock(return_value=mock_response)
         mock_stream_value.__aexit__ = AsyncMock(return_value=None)
         return MagicMock(return_value=mock_stream_value)
 
     @pytest.mark.asyncio()
     async def test_yields_content_tokens(self, mock_http):
         mock_response = MagicMock()
-        mock_http.stream = self._make_stream_cm([
-            'data: {"choices":[{"delta":{"content":"你好"}}]}',
-            'data: {"choices":[{"delta":{"content":"。"}}]}',
-            "data: [DONE]",
-        ], mock_response)
+        mock_http.stream = self._make_stream_cm(
+            [
+                'data: {"choices":[{"delta":{"content":"你好"}}]}',
+                'data: {"choices":[{"delta":{"content":"。"}}]}',
+                "data: [DONE]",
+            ],
+            mock_response,
+        )
 
         tokens = []
         async for token in chat_stream(0, "test"):
@@ -181,11 +204,14 @@ class TestChatStream:
     @pytest.mark.asyncio()
     async def test_skips_non_content_delta(self, mock_http):
         mock_response = MagicMock()
-        mock_http.stream = self._make_stream_cm([
-            'data: {"choices":[{"delta":{"role":"assistant"}}]}',
-            'data: {"choices":[{"delta":{"content":"Hello"}}]}',
-            "data: [DONE]",
-        ], mock_response)
+        mock_http.stream = self._make_stream_cm(
+            [
+                'data: {"choices":[{"delta":{"role":"assistant"}}]}',
+                'data: {"choices":[{"delta":{"content":"Hello"}}]}',
+                "data: [DONE]",
+            ],
+            mock_response,
+        )
 
         tokens = []
         async for token in chat_stream(0, "test"):
@@ -193,13 +219,32 @@ class TestChatStream:
         assert tokens == ["Hello"]
 
     @pytest.mark.asyncio()
+    async def test_accepts_data_without_space(self, mock_http):
+        mock_response = MagicMock()
+        mock_http.stream = self._make_stream_cm(
+            [
+                'data:{"choices":[{"delta":{"content":"tight"}}]}',
+                "data:[DONE]",
+            ],
+            mock_response,
+        )
+
+        tokens = []
+        async for token in chat_stream(0, "test"):
+            tokens.append(token)
+        assert tokens == ["tight"]
+
+    @pytest.mark.asyncio()
     async def test_handles_json_decode_error(self, mock_http):
         mock_response = MagicMock()
-        mock_http.stream = self._make_stream_cm([
-            "data: not-valid-json",
-            'data: {"choices":[{"delta":{"content":"still works"}}]}',
-            "data: [DONE]",
-        ], mock_response)
+        mock_http.stream = self._make_stream_cm(
+            [
+                "data: not-valid-json",
+                'data: {"choices":[{"delta":{"content":"still works"}}]}',
+                "data: [DONE]",
+            ],
+            mock_response,
+        )
 
         tokens = []
         async for token in chat_stream(0, "test"):
@@ -209,11 +254,14 @@ class TestChatStream:
     @pytest.mark.asyncio()
     async def test_handles_empty_content(self, mock_http):
         mock_response = MagicMock()
-        mock_http.stream = self._make_stream_cm([
-            'data: {"choices":[{"delta":{"content":null}}]}',
-            'data: {"choices":[{"delta":{}}]}',
-            "data: [DONE]",
-        ], mock_response)
+        mock_http.stream = self._make_stream_cm(
+            [
+                'data: {"choices":[{"delta":{"content":null}}]}',
+                'data: {"choices":[{"delta":{}}]}',
+                "data: [DONE]",
+            ],
+            mock_response,
+        )
 
         tokens = []
         async for token in chat_stream(0, "test"):
@@ -224,9 +272,12 @@ class TestChatStream:
     async def test_raises_on_http_error(self, mock_http):
         mock_response = MagicMock()
         mock_response.raise_for_status.side_effect = ValueError("HTTP 500")
-        mock_http.stream = self._make_stream_cm([
-            "data: [DONE]",
-        ], mock_response)
+        mock_http.stream = self._make_stream_cm(
+            [
+                "data: [DONE]",
+            ],
+            mock_response,
+        )
 
         with pytest.raises(ValueError, match="HTTP 500"):
             async for _ in chat_stream(0, "test"):
@@ -248,53 +299,60 @@ class TestChatStream:
         assert result == "hello"
 
     @pytest.mark.asyncio()
-    async def test_read_error_ends_gracefully(self, mock_http):
+    async def test_read_error_propagates_after_partial_tokens(self, mock_http):
         async def aiter_lines():
             yield 'data: {"choices":[{"delta":{"content":"partial"}}]}'
             raise httpx.ReadError("Connection reset")
+
         mock_http.stream = self._make_stream_cm(
             aiter_lines_fn=aiter_lines,
         )
 
         tokens = []
-        async for token in chat_stream(0, "test"):
-            tokens.append(token)
+        with pytest.raises(httpx.ReadError):
+            async for token in chat_stream(0, "test"):
+                tokens.append(token)
         assert tokens == ["partial"]
 
     @pytest.mark.asyncio()
-    async def test_timeout_ends_gracefully(self, mock_http):
+    async def test_timeout_propagates(self, mock_http):
         async def aiter_lines():
             yield 'data: {"choices":[{"delta":{"content":"超時前"}}]}'
             yield 'data: {"choices":[{"delta":{"content":"的內容"}}]}'
             raise httpx.TimeoutException("Read timeout")
+
         mock_http.stream = self._make_stream_cm(
             aiter_lines_fn=aiter_lines,
         )
 
         tokens = []
-        async for token in chat_stream(0, "test"):
-            tokens.append(token)
+        with pytest.raises(httpx.TimeoutException):
+            async for token in chat_stream(0, "test"):
+                tokens.append(token)
         assert tokens == ["超時前", "的內容"]
 
     @pytest.mark.asyncio()
-    async def test_remote_protocol_error_ends_gracefully(self, mock_http):
+    async def test_remote_protocol_error_propagates(self, mock_http):
         async def aiter_lines():
-            yield ''  # dummy → makes it an async generator, not coroutine
+            yield ""  # dummy → makes it an async generator, not coroutine
             raise httpx.RemoteProtocolError("Server disconnected")
+
         mock_http.stream = self._make_stream_cm(
             aiter_lines_fn=aiter_lines,
         )
 
         tokens = []
-        async for token in chat_stream(0, "test"):
-            tokens.append(token)
+        with pytest.raises(httpx.RemoteProtocolError):
+            async for token in chat_stream(0, "test"):
+                tokens.append(token)
         assert tokens == []
 
     @pytest.mark.asyncio()
     async def test_non_httpx_error_still_propagates(self, mock_http):
         async def aiter_lines():
-            yield ''
+            yield ""
             raise RuntimeError("Unexpected")
+
         mock_http.stream = self._make_stream_cm(
             aiter_lines_fn=aiter_lines,
         )
@@ -305,15 +363,16 @@ class TestChatStream:
 
 # ── _scan_sentences ─────────────────────────────────────────────────────────
 
+
 class TestScanSentences:
     """Test the production function ``_scan_sentences`` directly.
-    
+
     Each test simulates the streaming loop: accumulate *full_text* across
     tokens, call ``_scan_sentences(full_text, pos)`` on each token, and
     verify the accumulated output.
     """
 
-    def _run(self, tokens: list[str], min_len: int = 4) -> list[str]:
+    def _run(self, tokens: list[str], min_len: int = 1) -> list[str]:
         dispatched: list[str] = []
         full_text = ""
         pos = 0
@@ -328,18 +387,25 @@ class TestScanSentences:
 
     def test_multiple_sentences_sequential(self):
         assert self._run(["第一句。", "第二句。", "第三句。"]) == [
-            "第一句。", "第二句。", "第三句。",
+            "第一句。",
+            "第二句。",
+            "第三句。",
         ]
 
     def test_partial_then_complete(self):
         assert self._run(["今天", "天氣", "真好。"]) == ["今天天氣真好。"]
 
-    def test_short_fragments_skipped(self):
-        assert self._run(["AB。", "長句子。"]) == ["長句子。"]
+    def test_short_fragments_kept(self):
+        assert self._run(["AB。", "長句子。"]) == ["AB。", "長句子。"]
+
+    def test_punctuation_only_skipped(self):
+        assert self._run(["。。。", "好。"]) == ["好。"]
 
     def test_mixed_partial_sentences(self):
         assert self._run(["這是一", "個測試。第二個", "句子。最後一", "句。"]) == [
-            "這是一個測試。", "第二個句子。", "最後一句。",
+            "這是一個測試。",
+            "第二個句子。",
+            "最後一句。",
         ]
 
     def test_no_duplicate_on_identical_tokens(self):
@@ -347,7 +413,9 @@ class TestScanSentences:
 
     def test_overlapping_content(self):
         assert self._run(["第一句。", "第一句。第二句。"]) == [
-            "第一句。", "第一句。", "第二句。",
+            "第一句。",
+            "第一句。",
+            "第二句。",
         ]
 
     def test_stress_many_tokens(self):
@@ -358,7 +426,9 @@ class TestScanSentences:
 
     def test_inline_newline_boundary(self):
         assert self._run(["line1\nline2\nlong_enough\n"]) == [
-            "line1", "line2", "long_enough",
+            "line1",
+            "line2",
+            "long_enough",
         ]
 
     def test_no_sentence_boundary_at_all(self):
@@ -366,7 +436,9 @@ class TestScanSentences:
 
     def test_min_len_parameter(self):
         assert self._run(["AB。", "CD。", "EFGH。"], min_len=2) == [
-            "AB。", "CD。", "EFGH。",
+            "AB。",
+            "CD。",
+            "EFGH。",
         ]
 
     def test_pos_resume_across_tokens(self):

@@ -1,10 +1,19 @@
 import io
+import json
 import logging
 
 import edge_tts
 import httpx
 
-from bot.config import ZEN_API_BASE, ZEN_API_KEY, ZEN_MODEL, TTS_VOICE, build_system_prompt
+import bot.http_client
+from bot.config import (
+    TTS_VOICE,
+    ZEN_API_BASE,
+    ZEN_API_KEY,
+    ZEN_MODEL,
+    build_system_prompt,
+)
+from bot.retry import request_with_retry
 
 logger = logging.getLogger(__name__)
 
@@ -13,66 +22,63 @@ HEADERS = {
     "Content-Type": "application/json",
 }
 
+MAX_TEXT_LEN = 8000
+
+
+def _messages(text: str) -> list[dict[str, str]]:
+    return [
+        {"role": "system", "content": build_system_prompt()},
+        {"role": "user", "content": (text or "")[:MAX_TEXT_LEN]},
+    ]
+
 
 async def chat(chat_id: int, text: str) -> str:
-    system_prompt = build_system_prompt()
-    body = {
-        "model": ZEN_MODEL,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": text},
-        ],
-    }
-    async with httpx.AsyncClient(timeout=120) as client:
-        resp = await client.post(
+    body = {"model": ZEN_MODEL, "messages": _messages(text)}
+
+    async def _send() -> httpx.Response:
+        return await bot.http_client.get_client().post(
             f"{ZEN_API_BASE}/chat/completions",
             json=body,
             headers=HEADERS,
         )
-        resp.raise_for_status()
-        return resp.json()["choices"][0]["message"]["content"]
+
+    resp = await request_with_retry(_send, label="LLM request")
+    resp.raise_for_status()
+    return resp.json()["choices"][0]["message"]["content"]
 
 
 async def chat_stream(chat_id: int, text: str):
     """Stream LLM response token by token via SSE."""
-    system_prompt = build_system_prompt()
     body = {
         "model": ZEN_MODEL,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": text},
-        ],
+        "messages": _messages(text),
         "stream": True,
     }
-    try:
-        async with httpx.AsyncClient(timeout=120) as client:
-            async with client.stream(
-                "POST",
-                f"{ZEN_API_BASE}/chat/completions",
-                json=body,
-                headers=HEADERS,
-            ) as resp:
-                resp.raise_for_status()
-                async for line in resp.aiter_lines():
-                    if line.startswith("data: "):
-                        payload = line[6:].strip()
-                        if payload == "[DONE]":
-                            break
-                        import json
-                        try:
-                            chunk = json.loads(payload)
-                            delta = chunk.get("choices", [{}])[0].get("delta", {})
-                            content = delta.get("content", "")
-                            if content:
-                                yield content
-                        except json.JSONDecodeError:
-                            continue
-    except (httpx.ReadError, httpx.TimeoutException, httpx.RemoteProtocolError) as e:
-        logger.warning("Stream interrupted for chat %d: %s", chat_id, e)
 
-
-async def close_client() -> None:
-    pass
+    client = bot.http_client.get_client()
+    async with client.stream(
+        "POST",
+        f"{ZEN_API_BASE}/chat/completions",
+        json=body,
+        headers=HEADERS,
+    ) as resp:
+        resp.raise_for_status()
+        async for line in resp.aiter_lines():
+            if not line.startswith("data:"):
+                continue
+            payload = line[5:].lstrip()
+            if payload == "[DONE]":
+                break
+            try:
+                chunk = json.loads(payload)
+            except json.JSONDecodeError:
+                continue
+            # Some providers emit a final usage-only chunk with "choices": [].
+            choices = chunk.get("choices") or [{}]
+            delta = choices[0].get("delta") or {}
+            content = delta.get("content")
+            if content:
+                yield content
 
 
 async def tts(text: str) -> bytes:
