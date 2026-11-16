@@ -166,7 +166,9 @@ class TestHandleVoice:
         update = _make_update(user_id=123, voice_file_size=20 * 1024 * 1024)
         context = _make_context()
         await handle_voice(update, context)
-        update.message.reply_text.assert_awaited_once_with("Voice file too large.")
+        update.message.reply_text.assert_awaited_once_with(
+            "Voice file too large or unknown size."
+        )
 
     @pytest.mark.asyncio()
     async def test_quota_exceeded(self):
