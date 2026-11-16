@@ -259,32 +259,42 @@ class WorkerPool:
             pos = 0
             last_edit = 0.0
 
-            def queue_tts(text_so_far: str, cursor: int) -> int:
-                """Queue TTS for complete sentences, respecting both caps.
-
-                Truncate or constrain each sentence to the remaining TTS budget
-                before scheduling it, and cover a sentence longer than the
-                configured maximum.
-                """
+            def _schedule_tts_fragment(fragment: str) -> bool:
+                """Schedule a single TTS fragment within char and sentence caps."""
                 nonlocal tts_chars
+                fragment = fragment.strip()
+                if not fragment or not _has_content(fragment):
+                    return True
+                if len(tts_tasks) >= TTS_MAX_SENTENCES:
+                    logger.info("TTS sentence budget reached; sending text only for the rest")
+                    return False
+                remaining_chars = TTS_MAX_CHARS - tts_chars
+                if remaining_chars <= 0:
+                    logger.info("TTS char budget reached; sending text only for the rest")
+                    return False
+                if len(fragment) > remaining_chars:
+                    fragment = fragment[:remaining_chars]
+                    logger.info(
+                        "Truncated sentence to %d chars (TTS budget limit)",
+                        remaining_chars,
+                    )
+                tts_chars += len(fragment)
+                tts_tasks.append(asyncio.create_task(self._tts_limited(fragment)))
+                return True
+
+            def queue_tts(text_so_far: str, cursor: int) -> int:
+                """Queue TTS for complete sentences, respecting both caps."""
                 cursor, new = _scan_sentences(text_so_far, cursor)
                 for sentence in new:
-                    if len(tts_tasks) >= TTS_MAX_SENTENCES:
-                        logger.info("TTS sentence budget reached; sending text only for the rest")
+                    if not _schedule_tts_fragment(sentence):
                         break
-                    remaining_chars = TTS_MAX_CHARS - tts_chars
-                    if remaining_chars <= 0:
-                        logger.info("TTS char budget reached; sending text only for the rest")
-                        break
-                    if len(sentence) > remaining_chars:
-                        sentence = sentence[:remaining_chars]
-                        logger.info(
-                            "Truncated sentence to %d chars (TTS budget limit)",
-                            remaining_chars,
-                        )
-                    tts_chars += len(sentence)
-                    tts_tasks.append(asyncio.create_task(self._tts_limited(sentence)))
                 return cursor
+
+            def flush_tts(text_so_far: str, cursor: int) -> int:
+                """Flush any trailing unpunctuated text within TTS caps."""
+                if cursor < len(text_so_far):
+                    _schedule_tts_fragment(text_so_far[cursor:])
+                return len(text_so_far)
 
             # Phase 1 — streaming (fast, progressive)
             stream_ok = True
@@ -315,23 +325,15 @@ class WorkerPool:
                             )
                     if task.is_voice:
                         pos = queue_tts(full_text, pos)
-                # Flush any remaining text after streaming ends
-                if task.is_voice and pos < len(full_text):
-                    remaining = full_text[pos:]
-                    if remaining.strip() and tts_chars < TTS_MAX_CHARS and len(tts_tasks) < TTS_MAX_SENTENCES:
-                        tts_chars += len(remaining)
-                        tts_tasks.append(asyncio.create_task(self._tts_limited(remaining)))
+                if task.is_voice:
+                    pos = flush_tts(full_text, pos)
             except (httpx.TransportError, httpx.HTTPStatusError):
                 logger.warning(
                     "Stream failed for chat %d, falling back to non-streaming", chat_id
                 )
                 stream_ok = False
-                # Flush any partial text accumulated before stream failure
-                if task.is_voice and pos < len(full_text):
-                    remaining = full_text[pos:]
-                    if remaining.strip() and tts_chars < TTS_MAX_CHARS and len(tts_tasks) < TTS_MAX_SENTENCES:
-                        tts_chars += len(remaining)
-                        tts_tasks.append(asyncio.create_task(self._tts_limited(remaining)))
+                if task.is_voice:
+                    pos = flush_tts(full_text, pos)
 
             # Phase 2 — fallback to non-streaming if stream failed
             if not stream_ok or not full_text:
@@ -364,12 +366,7 @@ class WorkerPool:
                         )
                     if task.is_voice:
                         pos = queue_tts(full_text, pos)
-                    # Flush any remaining text after fallback completes
-                    if pos < len(full_text):
-                        remaining = full_text[pos:]
-                        if remaining.strip() and tts_chars < TTS_MAX_CHARS and len(tts_tasks) < TTS_MAX_SENTENCES:
-                            tts_chars += len(remaining)
-                            tts_tasks.append(asyncio.create_task(self._tts_limited(remaining)))
+                        pos = flush_tts(full_text, pos)
 
             if not full_text:
                 await task.bot.edit_message_text(
