@@ -116,46 +116,32 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     )
 
 
-async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user_id, reason = _check_auth_and_throttle(update)
-    if user_id is None:
-        await _reply(update, reason or "Unauthorized.")
-        return
-
-    voice = _get_voice(update)
-    if voice is None:
-        await _reply(update, "❌ 無法取得語音檔案")
-        return
-    if voice.file_size and voice.file_size > MAX_VOICE_BYTES:
-        await _reply(update, "Voice file too large.")
-        return
-    if not await check_daily_quota(user_id):
-        await _reply(update, "今日額度已用完，請明天再試。")
-        return
-
+async def _download_and_transcribe(voice: Any) -> str:
+    """Download voice file to a temp path, transcribe it, and clean up."""
     TMP_DIR.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(
         dir=TMP_DIR, suffix=".ogg", delete=False
     ) as tmp:
         tmp_path = tmp.name
 
-    msg = await _reply(update, "⏳ Transcribing...")
-
     try:
         file = await voice.get_file()
         await file.download_to_drive(tmp_path)
-        text = await transcribe(tmp_path)
-    except Exception:
-        logger.exception("Whisper failed")
-        if msg:
-            await msg.edit_text("❌ 語音轉錄失敗，請稍後再試。")
-        return
+        return await transcribe(tmp_path)
     finally:
         try:
             os.unlink(tmp_path)
         except OSError:
             pass
 
+
+async def _enqueue_voice_task(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    msg: Any,
+    text: str,
+) -> None:
+    """Update status message and enqueue the transcribed voice task."""
     if msg:
         await msg.edit_text(f"You: {text}\n\n⏳ Thinking...")
 
@@ -174,3 +160,32 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             is_voice=True,
         )
     )
+
+
+async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id, reason = _check_auth_and_throttle(update)
+    if user_id is None:
+        await _reply(update, reason or "Unauthorized.")
+        return
+
+    voice = _get_voice(update)
+    if voice is None:
+        await _reply(update, "❌ 無法取得語音檔案")
+        return
+    if voice.file_size and voice.file_size > MAX_VOICE_BYTES:
+        await _reply(update, "Voice file too large.")
+        return
+    if not await check_daily_quota(user_id):
+        await _reply(update, "今日額度已用完，請明天再試。")
+        return
+
+    msg = await _reply(update, "⏳ Transcribing...")
+    try:
+        text = await _download_and_transcribe(voice)
+    except Exception:
+        logger.exception("Whisper failed")
+        if msg:
+            await msg.edit_text("❌ 語音轉錄失敗，請稍後再試。")
+        return
+
+    await _enqueue_voice_task(update, context, msg, text)
