@@ -11,19 +11,23 @@ permissions:
 jobs:
   review:
     runs-on: ubuntu-latest
-    continue-on-error: true
+    # Surface real failures: with continue-on-error the run looked green
+    # while the opencode step was actually failing.
+    continue-on-error: false
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           persist-credentials: false
 
-      - uses: anomalyco/opencode/github@latest
+      # pinned 2026-03-25，等同原 @latest；dev 分支無 github/action.yml
+      - uses: anomalyco/opencode/github@77fc88c8ade8e5a620ebbe1197f3a572d29ae91a
         env:
           OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          model: opencode/deepseek-v4-flash-free
+          model: opencode/deepseek-v4.1-flash-free
+          variant: high
           use_github_token: true
           prompt: |
             Review this pull request following Staff Engineer standards:

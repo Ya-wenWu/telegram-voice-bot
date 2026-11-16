@@ -109,9 +109,7 @@ async def test_task_error_does_not_crash_worker(mock_bot):
     await pool.enqueue(
         Task(chat_id=1, reply_to_message_id=1, text="fail", bot=mock_bot)
     )
-    await pool.enqueue(
-        Task(chat_id=2, reply_to_message_id=2, text="ok", bot=mock_bot)
-    )
+    await pool.enqueue(Task(chat_id=2, reply_to_message_id=2, text="ok", bot=mock_bot))
 
     await asyncio.sleep(0.5)
 
