@@ -4,7 +4,7 @@ import httpx
 import pytest
 
 import bot.retry as retry_mod
-from main import TokenFilter
+from main import TokenFilter, TokenRedactingFormatter
 
 
 class TestRetry:
@@ -79,15 +79,25 @@ class TestRetry:
 
 
 class TestTokenFilterRedaction:
-    """測試 TokenFilter 是否能在非字串日誌參數中遮蔽機密。"""
+    """測試 TokenFilter 與 TokenRedactingFormatter 的機密遮蔽規則。"""
 
     def test_masks_token_in_dict_args(self):
+        # 20 字元以內的短金鑰應完全遮蔽為 ***
         f = TokenFilter("supersecrettoken1234")
         record = MagicMock()
         record.msg = "user=%(user)s"
         record.args = {"user": "supersecrettoken1234"}
         assert f.filter(record)
-        assert record.args == {"user": "***supe...1234***"}
+        assert record.args == {"user": "***"}
+
+    def test_masks_long_token_partially(self):
+        # 超過 20 字元的長金鑰才保留前 4 碼與後 4 碼
+        f = TokenFilter("supersecrettoken12345")
+        record = MagicMock()
+        record.msg = "token=%s"
+        record.args = ("supersecrettoken12345",)
+        assert f.filter(record)
+        assert record.args == ("***supe...2345***",)
 
     def test_masks_token_in_tuple_args_non_string(self):
         # 非字串參數（例如 HTTP URL 物件）- 必須對 str() 進行遮蔽
@@ -118,8 +128,30 @@ class TestTokenFilterRedaction:
         record.args = {"user": "alice"}
         assert f.filter(record)
         assert isinstance(record.args, dict)
-        assert record.msg == "user=%(user)s token ***supe...1234***"
+        assert record.msg == "user=%(user)s token ***"
 
+class TestTokenRedactingFormatter:
+    """測試正式環境使用的 TokenRedactingFormatter。"""
+
+    def test_redacts_short_and_long_tokens_and_keeps_format(self):
+        import logging
+
+        formatter = TokenRedactingFormatter(["short_secret_16c", "very_long_secret_token_25"])
+        record = logging.LogRecord(
+            name="test.logger",
+            level=logging.INFO,
+            pathname=__file__,
+            lineno=1,
+            msg="short=%s long=%s",
+            args=("short_secret_16c", "very_long_secret_token_25"),
+            exc_info=None,
+        )
+        formatted = formatter.format(record)
+        assert "[INFO] test.logger:" in formatted
+        assert "short=***" in formatted
+        assert "long=***very...n_25***" in formatted
+        assert "short_secret_16c" not in formatted
+        assert "very_long_secret_token_25" not in formatted
 
 class TestRedactDiff:
     """測試 _SECRET_PATTERNS 對 diff 中敏感值的遮蔽。"""
