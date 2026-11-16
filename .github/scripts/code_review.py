@@ -80,7 +80,7 @@ _SECRET_PATTERNS = [
     # 1. Known project secret names (ENV, YAML, INI, and quoted JSON assignments)
     (
         re.compile(
-            r'(?im)(["\']?(?:telegram[_-]?bot[_-]?token|zen[_-]?api[_-]?key|whisper[_-]?api[_-]?key)["\']?\s*[:=]\s*)(?:"[^"\\]*(?:\\.[^"\\]*)*"|\'[^\'\\]*(?:\\.[^\'\\]*)*\'|[^\s,\}\]]+)'
+            r'(?im)(["\']?(?:telegram[_-]?bot[_-]?token|zen[_-]?api[_-]?key|whisper[_-]?api[_-]?key)["\']?\s*[:=]\s*)(?:"(?:[^"\\]|\\.)*"|\'(?:[^\'\\]|\\.)*\'|[^\s,\}\]]+)'
         ),
         r'\1***REDACTED***',
     ),
@@ -92,14 +92,14 @@ _SECRET_PATTERNS = [
     # 3. Generic secret env var names (*_TOKEN, *_API_KEY, *_SECRET, *_PASSWORD, etc.)
     (
         re.compile(
-            r'(?im)(["\']?[A-Z][A-Z0-9_]*(?:_TOKEN|_API_KEY|_SECRET|_PASSWORD|_PASSWD|_PWD|_CREDENTIAL|_PRIVATE_KEY|_SECRET_KEY|_ACCESS_KEY|_AUTH_KEY)["\']?\s*[:=]\s*)(?:"[^"\\]*(?:\\.[^"\\]*)*"|\'[^\'\\]*(?:\\.[^\'\\]*)*\'|[^\s,\}\]]+)'
+            r'(?im)(["\']?[A-Z][A-Z0-9_]*(?:_TOKEN|_API_KEY|_SECRET|_PASSWORD|_PASSWD|_PWD|_CREDENTIAL|_PRIVATE_KEY|_SECRET_KEY|_ACCESS_KEY|_AUTH_KEY)["\']?\s*[:=]\s*)(?:"(?:[^"\\]|\\.)*"|\'(?:[^\'\\]|\\.)*\'|[^\s,\}\]]+)'
         ),
         r'\1***REDACTED***',
     ),
     # 4. Common secret assignment patterns with = or := or : (supports quoted JSON keys & values)
     (
         re.compile(
-            r'(?im)(["\']?(?:api[_-]?key|secret[_-]?key|access[_-]?token|auth[_-]?token|private[_-]?key|password|passwd|pwd)["\']?\s*[:=]\s*)(?:"[^"\\]*(?:\\.[^"\\]*)*"|\'[^\'\\]*(?:\\.[^\'\\]*)*\'|[^\s,\}\]]+)'
+            r'(?im)(["\']?(?:api[_-]?key|secret[_-]?key|access[_-]?token|auth[_-]?token|private[_-]?key|password|passwd|pwd)["\']?\s*[:=]\s*)(?:"(?:[^"\\]|\\.)*"|\'(?:[^\'\\]|\\.)*\'|[^\s,\}\]]+)'
         ),
         r'\1***REDACTED***',
     ),
@@ -174,7 +174,6 @@ def validate_review_output(output: str) -> str:
             return "⚠️ Review output failed safety validation; skipping AI review."
     return output
 
-# 有安全漏洞
 def policy_filter_review_output(output: str) -> str:
     """Policy gate on LLM output before printing.
 
