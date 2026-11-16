@@ -1,7 +1,9 @@
+import asyncio
 import logging
 import os
 import tempfile
 import time
+from pathlib import Path
 from typing import Any
 
 from telegram import Update
@@ -128,24 +130,30 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 
 async def _download_and_transcribe(voice: Any) -> str:
-    """Download voice file to a temp path, read bytes, transcribe, and clean up."""
-    TMP_DIR.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile(dir=TMP_DIR, suffix=".ogg", delete=False) as tmp:
-        tmp_path = tmp.name
+    """Download voice file to disk, read bytes asynchronously, and clean up."""
+    await asyncio.to_thread(TMP_DIR.mkdir, parents=True, exist_ok=True)
+    tmp_path = await asyncio.to_thread(_create_temp_voice_path)
 
     try:
         file = await voice.get_file()
         await file.download_to_drive(tmp_path)
-        if os.path.getsize(tmp_path) > MAX_VOICE_BYTES:
+        size = await asyncio.to_thread(os.path.getsize, tmp_path)
+        if size > MAX_VOICE_BYTES:
             raise ValueError("Voice file exceeds MAX_VOICE_BYTES after download")
-        with open(tmp_path, "rb") as audio_file:
-            audio_bytes = audio_file.read()
+        audio_bytes = await asyncio.to_thread(Path(tmp_path).read_bytes)
         return await transcribe(audio_bytes)
     finally:
         try:
-            os.unlink(tmp_path)
+            await asyncio.to_thread(os.unlink, tmp_path)
         except OSError:
             pass
+
+
+def _create_temp_voice_path() -> str:
+    """Create a temporary file path synchronously for worker thread usage."""
+    with tempfile.NamedTemporaryFile(dir=TMP_DIR, suffix=".ogg", delete=False) as tmp:
+        return tmp.name
+
 
 async def _enqueue_voice_task(
     update: Update,
