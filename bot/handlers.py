@@ -121,10 +121,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     await worker_pool.enqueue(
         Task(
-            chat_id=chat_id,
-            reply_to_message_id=message_id,
-            text=text,
-            bot=context.bot,
+            chat_id=chat_id, 
+            reply_to_message_id=message_id, 
+            text=text, 
+            bot=context.bot, 
         )
     )
 
@@ -156,10 +156,10 @@ def _create_temp_voice_path() -> str:
 
 
 async def _enqueue_voice_task(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-    msg: Any,
-    text: str,
+    update: Update, 
+    context: ContextTypes.DEFAULT_TYPE, 
+    msg: Any, 
+    text: str, 
 ) -> None:
     """Update status message and enqueue the transcribed voice task."""
     preview = text if len(text) <= 3800 else text[:3800] + "..."
@@ -175,11 +175,11 @@ async def _enqueue_voice_task(
 
     await worker_pool.enqueue(
         Task(
-            chat_id=chat_id,
-            reply_to_message_id=message_id,
-            text=text,
-            bot=context.bot,
-            is_voice=True,
+            chat_id=chat_id, 
+            reply_to_message_id=message_id, 
+            text=text, 
+            bot=context.bot, 
+            is_voice=True, 
         )
     )
 
