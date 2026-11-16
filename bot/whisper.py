@@ -77,7 +77,9 @@ async def _transcribe_chunk(chunk: bytes | BinaryIO) -> str:
         if hasattr(chunk, "seek"):
             chunk.seek(0)
         files = {"file": ("audio.ogg", chunk, "audio/ogg")}
-        return await bot.http_client.get_client().post(url, files=files, data=data, headers=headers)
+        return await bot.http_client.get_client().post(
+            url, files=files, data=data, headers=headers
+        )
 
     resp = await request_with_retry(_send, label="Transcription")
     resp.raise_for_status()

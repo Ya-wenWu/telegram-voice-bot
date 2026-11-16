@@ -40,9 +40,7 @@ def _get_client() -> Redis:
     return _client
 
 
-async def check_daily_quota(
-    user_id: int, limit: int = DAILY_REQUEST_LIMIT
-) -> bool:
+async def check_daily_quota(user_id: int, limit: int = DAILY_REQUEST_LIMIT) -> bool:
     """Return True when *user_id* is still within today's request quota.
 
     Redis failures fail open so a cache outage does not take the bot down.
@@ -59,7 +57,6 @@ async def check_daily_quota(
         allowed = await _get_client().eval(_QUOTA_SCRIPT, 1, key, 172800, limit)
         return bool(int(allowed))
     except Exception as exc:  # noqa: BLE001 - fail open on any Redis failure
-
         _disabled_until = time.monotonic() + _FAILURE_COOLDOWN_SEC
         logger.warning(
             "Redis quota check failed; allowing request for %ss (error_type=%s)",

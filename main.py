@@ -35,9 +35,7 @@ class TokenRedactingFormatter(logging.Formatter):
         for token in self._tokens:
             if token and token in msg:
                 replacement = (
-                    f"***{token[:4]}...{token[-4:]}***"
-                    if len(token) > 20
-                    else "***"
+                    f"***{token[:4]}...{token[-4:]}***" if len(token) > 20 else "***"
                 )
                 msg = msg.replace(token, replacement)
         return msg
@@ -102,10 +100,18 @@ class TokenFilter(logging.Filter):
 
     def _mask(self, value: object) -> object:
         if isinstance(value, str):
-            return value.replace(self._token, self._replacement) if self._token in value else value
+            return (
+                value.replace(self._token, self._replacement)
+                if self._token in value
+                else value
+            )
         # Redact string representation of non-string args (e.g. HTTP URL objects)
         # so tokens embedded in request URLs cannot bypass masking.
-        return str(value).replace(self._token, self._replacement) if self._token in str(value) else str(value)
+        return (
+            str(value).replace(self._token, self._replacement)
+            if self._token in str(value)
+            else str(value)
+        )
 
     def filter(self, record):
         msg = record.msg if isinstance(record.msg, str) else str(record.msg)
@@ -114,9 +120,7 @@ class TokenFilter(logging.Filter):
         if record.args:
             if isinstance(record.args, dict):
                 # dict-style (mapping) args must stay a dict for % formatting.
-                record.args = {
-                    k: self._mask(v) for k, v in record.args.items()
-                }
+                record.args = {k: self._mask(v) for k, v in record.args.items()}
             else:
                 record.args = tuple(self._mask(a) for a in record.args)
         return True

@@ -102,7 +102,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     chat_id = _get_chat_id(update)
     message_id = _get_message_id(update)
     if chat_id is None or message_id is None or worker_pool is None:
-        logger.warning("Cannot enqueue text task: missing chat_id/message_id/worker_pool")
+        logger.warning(
+            "Cannot enqueue text task: missing chat_id/message_id/worker_pool"
+        )
         await _reply(update, "⚠️ 系統忙碌，請稍後再試")
         return
 
@@ -119,9 +121,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 async def _download_and_transcribe(voice: Any) -> str:
     """Download voice file to a temp path, transcribe it, and clean up."""
     TMP_DIR.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile(
-        dir=TMP_DIR, suffix=".ogg", delete=False
-    ) as tmp:
+    with tempfile.NamedTemporaryFile(dir=TMP_DIR, suffix=".ogg", delete=False) as tmp:
         tmp_path = tmp.name
 
     try:
@@ -150,7 +150,9 @@ async def _enqueue_voice_task(
     chat_id = _get_chat_id(update)
     message_id = _get_message_id(update)
     if chat_id is None or message_id is None or worker_pool is None:
-        logger.warning("Cannot enqueue voice task: missing chat_id/message_id/worker_pool")
+        logger.warning(
+            "Cannot enqueue voice task: missing chat_id/message_id/worker_pool"
+        )
         return
 
     await worker_pool.enqueue(

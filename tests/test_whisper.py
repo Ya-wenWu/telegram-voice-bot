@@ -33,7 +33,9 @@ class TestTranscribe:
 
     @pytest.mark.asyncio()
     async def test_delegates_to_chunk(self):
-        with patch("bot.whisper._transcribe_chunk", AsyncMock(return_value="你好")) as mock_tc:
+        with patch(
+            "bot.whisper._transcribe_chunk", AsyncMock(return_value="你好")
+        ) as mock_tc:
             result = await transcribe(b"short_audio")
             assert result == "你好"
             mock_tc.assert_awaited_once_with(b"short_audio")
