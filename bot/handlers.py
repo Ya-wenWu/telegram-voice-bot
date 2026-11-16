@@ -145,7 +145,11 @@ async def _enqueue_voice_task(
 ) -> None:
     """Update status message and enqueue the transcribed voice task."""
     if msg:
-        await msg.edit_text(f"You: {text}\n\n⏳ Thinking...")
+        preview = text if len(text) <= 3800 else text[:3800] + "..."
+        try:
+            await msg.edit_text(f"You: {preview}\n\n⏳ Thinking...")
+        except Exception:  # noqa: BLE001 - cosmetic preview edit must not block enqueue
+            logger.debug("Failed to edit voice preview message", exc_info=True)
 
     chat_id = _get_chat_id(update)
     message_id = _get_message_id(update)
@@ -190,6 +194,14 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         logger.exception("Whisper failed")
         if msg:
             await msg.edit_text("❌ 語音轉錄失敗，請稍後再試。")
+        return
+
+    if not text or not text.strip():
+        if msg:
+            try:
+                await msg.edit_text("⚠️ 無法辨識語音內容，請重新錄製。")
+            except Exception:  # noqa: BLE001 - best-effort status edit
+                logger.debug("Failed to edit empty transcript message", exc_info=True)
         return
 
     await _enqueue_voice_task(update, context, msg, text)
