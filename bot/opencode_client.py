@@ -5,7 +5,7 @@ import logging
 import edge_tts
 import httpx
 
-import bot
+import bot.http_client
 from bot.config import (
     TTS_VOICE,
     ZEN_API_BASE,
