@@ -25,8 +25,9 @@ class TokenRedactingFormatter(logging.Formatter):
     emitted to the stream.
     """
 
-    def __init__(self, tokens: list[str], fmt: str = LOG_FORMAT, *args, **kwargs):
-        super().__init__(fmt=fmt, *args, **kwargs)
+    def __init__(self, tokens: list[str], *args, **kwargs):
+        kwargs.setdefault("fmt", LOG_FORMAT)
+        super().__init__(*args, **kwargs)
         self._tokens = [t for t in tokens if t]
 
     def format(self, record: logging.LogRecord) -> str:
