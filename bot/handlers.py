@@ -128,7 +128,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 
 async def _download_and_transcribe(voice: Any) -> str:
-    """Download voice file to a temp path, transcribe it, and clean up."""
+    """Download voice file to a temp path, read bytes, transcribe, and clean up."""
     TMP_DIR.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(dir=TMP_DIR, suffix=".ogg", delete=False) as tmp:
         tmp_path = tmp.name
@@ -138,13 +138,14 @@ async def _download_and_transcribe(voice: Any) -> str:
         await file.download_to_drive(tmp_path)
         if os.path.getsize(tmp_path) > MAX_VOICE_BYTES:
             raise ValueError("Voice file exceeds MAX_VOICE_BYTES after download")
-        return await transcribe(tmp_path)
+        with open(tmp_path, "rb") as audio_file:
+            audio_bytes = audio_file.read()
+        return await transcribe(audio_bytes)
     finally:
         try:
             os.unlink(tmp_path)
         except OSError:
             pass
-
 
 async def _enqueue_voice_task(
     update: Update,
