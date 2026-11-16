@@ -127,6 +127,8 @@ async def _download_and_transcribe(voice: Any) -> str:
     try:
         file = await voice.get_file()
         await file.download_to_drive(tmp_path)
+        if os.path.getsize(tmp_path) > MAX_VOICE_BYTES:
+            raise ValueError("Voice file exceeds MAX_VOICE_BYTES after download")
         return await transcribe(tmp_path)
     finally:
         try:
