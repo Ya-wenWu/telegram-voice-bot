@@ -184,6 +184,15 @@ async def _enqueue_voice_task(
     )
 
 
+def _check_voice_file(voice: Any | None) -> str | None:
+    """Validate voice attachment existence and file size."""
+    if voice is None:
+        return "❌ 無法取得語音檔案"
+    if not voice.file_size or voice.file_size > MAX_VOICE_BYTES:
+        return "Voice file too large or unknown size."
+    return None
+
+
 async def _validate_voice_request(update: Update) -> tuple[Any | None, str | None]:
     """Validate auth, rate limit, voice attachment, size, and daily quota."""
     user_id, reason = _check_auth_and_throttle(update)
@@ -191,20 +200,10 @@ async def _validate_voice_request(update: Update) -> tuple[Any | None, str | Non
         return None, reason or "Unauthorized."
 
     voice = _get_voice(update)
-    if voice is None:
-        return None, "❌ 無法取得語音檔案"
-    if not voice.file_size or voice.file_size > MAX_VOICE_BYTES:
-        return None, "Voice file too large or unknown size."
-    if not await check_daily_quota(user_id):
-        return None, "今日額度已用完，請明天再試。"
+    voice_error = _check_voice_file(voice)
+    if voice_error:
+        return None, voice_error
 
-    return voice, None
-
-    voice = _get_voice(update)
-    if voice is None:
-        return None, "❌ 無法取得語音檔案"
-    if voice.file_size and voice.file_size > MAX_VOICE_BYTES:
-        return None, "Voice file too large."
     if not await check_daily_quota(user_id):
         return None, "今日額度已用完，請明天再試。"
 
@@ -213,8 +212,8 @@ async def _validate_voice_request(update: Update) -> tuple[Any | None, str | Non
 
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     voice, error_msg = await _validate_voice_request(update)
-    if error_msg or voice is None:
-        await _reply(update, error_msg or "❌ 無法取得語音檔案")
+    if error_msg:
+        await _reply(update, error_msg)
         return
 
     msg = await _reply(update, "⏳ Transcribing...")
