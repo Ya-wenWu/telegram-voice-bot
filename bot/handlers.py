@@ -193,6 +193,16 @@ async def _validate_voice_request(update: Update) -> tuple[Any | None, str | Non
     voice = _get_voice(update)
     if voice is None:
         return None, "❌ 無法取得語音檔案"
+    if not voice.file_size or voice.file_size > MAX_VOICE_BYTES:
+        return None, "Voice file too large or unknown size."
+    if not await check_daily_quota(user_id):
+        return None, "今日額度已用完，請明天再試。"
+
+    return voice, None
+
+    voice = _get_voice(update)
+    if voice is None:
+        return None, "❌ 無法取得語音檔案"
     if voice.file_size and voice.file_size > MAX_VOICE_BYTES:
         return None, "Voice file too large."
     if not await check_daily_quota(user_id):
