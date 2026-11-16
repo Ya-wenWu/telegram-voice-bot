@@ -287,11 +287,25 @@ def main():
         print("✅ No diff to review.")
         return
 
+    # 1. Fail closed when high-risk private key blocks are present
+    if re.search(r'(?is)-----BEGIN\s+[A-Z\s]+PRIVATE\s+KEY-----', diff):
+        print(
+            "::error::High-risk private key detected in PR diff. "
+            "Aborting AI review to prevent secret disclosure.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    # 2. Redact secrets immediately after reading (before truncation)
+    redacted_diff = redact_diff(diff)
+    if redacted_diff != diff:
+        print("::warning::Sensitive values were detected and redacted before AI review.")
+    diff = redacted_diff
+
     if len(diff) > 80000:
         diff = diff[:80000] + "\n... (truncated, diff too large)"
 
-    # Redact secrets and sanitize untrusted diff input before external transmission
-    diff = redact_diff(diff)
+    # 3. Sanitize untrusted diff input before external transmission
     diff = sanitize_diff_input(diff)
 
     try:
