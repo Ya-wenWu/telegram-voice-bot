@@ -130,13 +130,16 @@ class TestTokenFilterRedaction:
         assert isinstance(record.args, dict)
         assert record.msg == "user=%(user)s token ***"
 
+
 class TestTokenRedactingFormatter:
     """測試正式環境使用的 TokenRedactingFormatter。"""
 
     def test_redacts_short_and_long_tokens_and_keeps_format(self):
         import logging
 
-        formatter = TokenRedactingFormatter(["short_secret_16c", "very_long_secret_token_25"])
+        formatter = TokenRedactingFormatter(
+            ["short_secret_16c", "very_long_secret_token_25"]
+        )
         record = logging.LogRecord(
             name="test.logger",
             level=logging.INFO,
@@ -153,12 +156,14 @@ class TestTokenRedactingFormatter:
         assert "short_secret_16c" not in formatted
         assert "very_long_secret_token_25" not in formatted
 
+
 class TestRedactDiff:
     """測試 _SECRET_PATTERNS 對 diff 中敏感值的遮蔽。"""
 
     @pytest.fixture()
     def code_review_module(self):
         import importlib.util
+
         spec = importlib.util.spec_from_file_location(
             "code_review", ".github/scripts/code_review.py"
         )
@@ -178,17 +183,24 @@ class TestRedactDiff:
             ("MY_SECRET_KEY=fake0000000000003", "MY_SECRET_KEY=***REDACTED***"),
             ("MY_PASSWORD=fake0000000000004", "MY_PASSWORD=***REDACTED***"),
             # Bearer 權杖
-            ("Authorization: Bearer fake0000000000005", "Authorization: Bearer ***REDACTED***"),
+            (
+                "Authorization: Bearer fake0000000000005",
+                "Authorization: Bearer ***REDACTED***",
+            ),
             # Grok/GitHub 風格的密鑰
             ("gsk_123456789abcdef", "***REDACTED***"),
             ("sk_123456789abcdef", "***REDACTED***"),
         ],
     )
-    def test_redact_secret_patterns(self, diff_input, expected_pattern, code_review_module):
+    def test_redact_secret_patterns(
+        self, diff_input, expected_pattern, code_review_module
+    ):
         redacted = diff_input
         for pattern, replacement in code_review_module._SECRET_PATTERNS:
             redacted = pattern.sub(replacement, redacted)
-        assert expected_pattern in redacted, f"預期在 '{redacted}' 中找到 '{expected_pattern}'"
+        assert expected_pattern in redacted, (
+            f"預期在 '{redacted}' 中找到 '{expected_pattern}'"
+        )
 
     def test_redact_diff_function(self, code_review_module):
         diff = (

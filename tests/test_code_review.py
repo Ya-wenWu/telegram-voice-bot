@@ -4,7 +4,9 @@ from pathlib import Path
 import pytest
 
 # 動態載入 .github/scripts/code_review.py 模組
-SCRIPT_PATH = Path(__file__).resolve().parents[1] / ".github" / "scripts" / "code_review.py"
+SCRIPT_PATH = (
+    Path(__file__).resolve().parents[1] / ".github" / "scripts" / "code_review.py"
+)
 spec = importlib.util.spec_from_file_location("code_review", SCRIPT_PATH)
 assert spec is not None and spec.loader is not None
 code_review = importlib.util.module_from_spec(spec)
@@ -57,6 +59,7 @@ spec.loader.exec_module(code_review)
 def test_redact_diff_formats(raw_diff: str, expected: str) -> None:
     assert code_review.redact_diff(raw_diff) == expected
 
+
 @pytest.mark.parametrize(
     "raw_diff, expected",
     [
@@ -78,4 +81,3 @@ def test_redact_diff_formats(raw_diff: str, expected: str) -> None:
 )
 def test_sanitize_diff_input_multiline_directives(raw_diff: str, expected: str) -> None:
     assert code_review.sanitize_diff_input(raw_diff) == expected
-

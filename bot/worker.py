@@ -55,7 +55,9 @@ async def _typing_loop(bot: Bot, chat_id: int, stop_event: asyncio.Event) -> Non
 
 
 def _scan_sentences(
-    text: str, pos: int, min_len: int = 1,
+    text: str,
+    pos: int,
+    min_len: int = 1,
 ) -> tuple[int, list[str]]:
     """Scan *text* from character position *pos* forward for complete sentences.
 
@@ -75,7 +77,7 @@ def _scan_sentences(
                 break
         if boundary is None:
             break
-        sentence = text[pos:boundary + 1].strip()
+        sentence = text[pos : boundary + 1].strip()
         pos = boundary + 1
         if len(sentence) >= min_len and _has_content(sentence):
             found.append(sentence)
@@ -125,7 +127,7 @@ def _take_prefix(text: str, limit: int) -> tuple[str, str]:
     for sep in ("\n", " "):
         at = prefix.rfind(sep)
         if at > 0 and _utf16_len(prefix[:at]) >= limit * 0.6:
-            return prefix[: at + 1], text[at + 1:]
+            return prefix[: at + 1], text[at + 1 :]
     return prefix, rest
 
 
@@ -160,9 +162,21 @@ async def _concat_mp3(parts: list[bytes]) -> bytes:
         await asyncio.to_thread(_write_text, list_path, listing)
         out_path = os.path.join(tmpdir, "out.mp3")
         proc = await asyncio.create_subprocess_exec(
-            "ffmpeg", "-y", "-f", "concat", "-safe", "0",
-            "-i", list_path, "-c:a", "libmp3lame", "-q:a", "4",
-            "-loglevel", "quiet", out_path,
+            "ffmpeg",
+            "-y",
+            "-f",
+            "concat",
+            "-safe",
+            "0",
+            "-i",
+            list_path,
+            "-c:a",
+            "libmp3lame",
+            "-q:a",
+            "4",
+            "-loglevel",
+            "quiet",
+            out_path,
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL,
         )
@@ -235,7 +249,8 @@ class WorkerPool:
             except Exception:
                 logger.exception("Worker %d failed processing task", idx)
                 await self._safe_send(
-                    task.bot, task.chat_id,
+                    task.bot,
+                    task.chat_id,
                     "⚠️ 系統忙碌，請稍後再試",
                     task.reply_to_message_id,
                 )
@@ -268,11 +283,15 @@ class WorkerPool:
                 if not fragment or not _has_content(fragment):
                     return True
                 if len(tts_tasks) >= TTS_MAX_SENTENCES:
-                    logger.info("TTS sentence budget reached; sending text only for the rest")
+                    logger.info(
+                        "TTS sentence budget reached; sending text only for the rest"
+                    )
                     return False
                 remaining_chars = TTS_MAX_CHARS - tts_chars
                 if remaining_chars <= 0:
-                    logger.info("TTS char budget reached; sending text only for the rest")
+                    logger.info(
+                        "TTS char budget reached; sending text only for the rest"
+                    )
                     return False
                 if len(fragment) > remaining_chars:
                     fragment = fragment[:remaining_chars]
@@ -415,7 +434,10 @@ class WorkerPool:
                 await self._deliver_text(task, msg_id, full_text)
             else:
                 await self._safe_send(
-                    task.bot, chat_id, "⚠️ 系統忙碌，請稍後再試", task.reply_to_message_id
+                    task.bot,
+                    chat_id,
+                    "⚠️ 系統忙碌，請稍後再試",
+                    task.reply_to_message_id,
                 )
         finally:
             stop_event.set()

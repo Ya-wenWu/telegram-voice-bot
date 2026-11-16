@@ -8,7 +8,9 @@ import bot.handlers as h
 from bot.handlers import handle_text, handle_voice, start
 
 
-def _make_update(user_id=123, text="hello", voice_file_size=None, chat_id=456, message_id=789):
+def _make_update(
+    user_id=123, text="hello", voice_file_size=None, chat_id=456, message_id=789
+):
     update = MagicMock()
     update.effective_user.id = user_id
     update.effective_chat.id = chat_id
@@ -103,7 +105,9 @@ class TestHandleText:
         update = _make_update(user_id=123)
         context = _make_context()
         await handle_text(update, context)
-        update.message.reply_text.assert_awaited_once_with("Too many requests, please wait.")
+        update.message.reply_text.assert_awaited_once_with(
+            "Too many requests, please wait."
+        )
 
     @pytest.mark.asyncio()
     async def test_too_long(self):
@@ -182,8 +186,10 @@ class TestHandleVoice:
         h._last_request.clear()
         update = _make_update(user_id=123, voice_file_size=1000)
         context = _make_context()
-        with patch("bot.handlers.check_daily_quota", AsyncMock(return_value=True)), \
-             patch("bot.handlers.transcribe", AsyncMock(side_effect=Exception("boom"))):
+        with (
+            patch("bot.handlers.check_daily_quota", AsyncMock(return_value=True)),
+            patch("bot.handlers.transcribe", AsyncMock(side_effect=Exception("boom"))),
+        ):
             await handle_voice(update, context)
         update.message.reply_text.assert_any_await("⏳ Transcribing...")
         update.message.reply_text.return_value.edit_text.assert_awaited_once_with(
@@ -199,8 +205,10 @@ class TestHandleVoice:
         pool = MagicMock()
         pool.enqueue = AsyncMock()
         h.worker_pool = pool
-        with patch("bot.handlers.check_daily_quota", AsyncMock(return_value=True)), \
-             patch("bot.handlers.transcribe", AsyncMock(return_value="你好")):
+        with (
+            patch("bot.handlers.check_daily_quota", AsyncMock(return_value=True)),
+            patch("bot.handlers.transcribe", AsyncMock(return_value="你好")),
+        ):
             await handle_voice(update, context)
         pool.enqueue.assert_awaited_once()
         task = pool.enqueue.await_args[0][0]
