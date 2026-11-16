@@ -142,11 +142,18 @@ class TestChatStream:
     that returns a mock client with a mock stream().
     """
 
+    @pytest.fixture(autouse=True)
+    def _reset_shared_client(self):
+        import bot.http_client
+
+        bot.http_client._client = None
+        yield
+        bot.http_client._client = None
+
     @pytest.fixture()
     def mock_http(self):
-        with patch("bot.opencode_client.httpx.AsyncClient") as MockClient:
-            mock_client = MagicMock()
-            MockClient.return_value = mock_client
+        mock_client = MagicMock()
+        with patch("bot.http_client.get_client", return_value=mock_client):
             yield mock_client
 
     def _make_stream_cm(
