@@ -34,3 +34,4 @@ dist/
 htmlcov/
 tests/__pycache__/
 venv/
+/.vs
