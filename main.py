@@ -14,6 +14,8 @@ from bot.http_client import close_client
 from bot.redis_client import close_redis
 from bot.worker import WorkerPool
 
+LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+
 
 class TokenRedactingFormatter(logging.Formatter):
     """Formatting layer that redacts secrets from all log output.
@@ -23,22 +25,26 @@ class TokenRedactingFormatter(logging.Formatter):
     emitted to the stream.
     """
 
-    def __init__(self, tokens: list[str], *args, **kwargs):
-        super().__init__(*args, **kwargs)
+    def __init__(self, tokens: list[str], fmt: str = LOG_FORMAT, *args, **kwargs):
+        super().__init__(fmt=fmt, *args, **kwargs)
         self._tokens = [t for t in tokens if t]
 
     def format(self, record: logging.LogRecord) -> str:
         msg = super().format(record)
         for token in self._tokens:
             if token and token in msg:
-                replacement = f"***{token[:4]}...{token[-4:]}***" if len(token) > 8 else "***"
+                replacement = (
+                    f"***{token[:4]}...{token[-4:]}***"
+                    if len(token) > 20
+                    else "***"
+                )
                 msg = msg.replace(token, replacement)
         return msg
 
 
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    format=LOG_FORMAT,
     stream=sys.stdout,
 )
 
@@ -48,7 +54,7 @@ logging.basicConfig(
 _secrets = [s for s in (TELEGRAM_BOT_TOKEN, ZEN_API_KEY, WHISPER_API_KEY) if s]
 if _secrets:
     _handler = logging.StreamHandler(sys.stdout)
-    _handler.setFormatter(TokenRedactingFormatter(_secrets))
+    _handler.setFormatter(TokenRedactingFormatter(_secrets, fmt=LOG_FORMAT))
     _root = logging.getLogger()
     _root.handlers = [_handler]
 
@@ -89,7 +95,9 @@ class TokenFilter(logging.Filter):
     def __init__(self, token: str):
         super().__init__()
         self._token = token
-        self._replacement = f"***{token[:4]}...{token[-4:]}***" if len(token) > 8 else "***"
+        self._replacement = (
+            f"***{token[:4]}...{token[-4:]}***" if len(token) > 20 else "***"
+        )
 
     def _mask(self, value: object) -> object:
         if isinstance(value, str):
@@ -111,6 +119,7 @@ class TokenFilter(logging.Filter):
             else:
                 record.args = tuple(self._mask(a) for a in record.args)
         return True
+
 
 NUM_WORKERS = int(os.getenv("BOT_WORKERS", "1"))
 CONCURRENT_UPDATES = int(os.getenv("CONCURRENT_UPDATES", "1"))
