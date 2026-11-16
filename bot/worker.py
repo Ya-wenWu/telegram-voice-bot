@@ -111,6 +111,8 @@ def _utf16_len(text: str) -> int:
 
 def _take_prefix(text: str, limit: int) -> tuple[str, str]:
     """Split *text* so the first part fits Telegram's UTF-16 limit."""
+    if _utf16_len(text) <= limit:
+        return text, ""
     units = 0
     cut = len(text)
     for i, ch in enumerate(text):
