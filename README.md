@@ -1,18 +1,18 @@
 # telegram-voice-bot
 
-A low-resource Telegram voice bot (1 vCPU / 1.4 GiB host) with text chat, remote
-Whisper transcription, edge-TTS replies, and daily quota enforcement via Redis.
+A low-resource Telegram voice bot with text chat, remote speech-to-text
+transcription, TTS replies, and daily quota enforcement via Redis.
 
 ## Features
 
-- **Text chat** — replies via OpenCode Zen (DeepSeek) LLM API
-- **Voice messages** — transcribed via Groq `whisper-large-v3-turbo`, then LLM
-  response is synthesized with edge-tts and sent back as MP3 audio
+- **Text chat** — replies via an OpenAI-compatible LLM endpoint
+- **Voice messages** — transcribed via a configurable Whisper-compatible STT endpoint,
+  then the LLM response is synthesized with a configurable async TTS engine and sent back as MP3 audio
 - **Short sentences spoken** — replies such as "好。" are not dropped by TTS
 - **Daily quotas** — Redis Lua atomic counter with TTL, fail-open, `Asia/Taipei` timezone
 - **Single-worker mode** — `BOT_WORKERS=1`, `CONCURRENT_UPDATES=1` for low-memory hosts
 - **Voice file cap** — `MAX_VOICE_BYTES=10 MB`, downloaded to disk temp dir (not `BytesIO`)
-- **TTS concurrency cap** — max 3 simultaneous edge-tts requests
+- **TTS concurrency cap** — max 3 simultaneous TTS requests
 - **ffmpeg concat** — re-encodes with `libmp3lame -q:a 4` for reliable MP3 output
 - **Retry/backoff** — 429/5xx retry with `Retry-After` honouring for LLM and transcription
 - **Generic user errors** — internal details never leaked to users
@@ -44,8 +44,8 @@ chmod 600 .env
 Edit `.env` with at minimum:
 - `TELEGRAM_BOT_TOKEN` — from @BotFather
 - `ALLOWED_USER_IDS` — comma-separated Telegram user IDs (empty = deny all)
-- `ZEN_API_KEY` — OpenCode Zen API key
-- `WHISPER_API_KEY` — Groq API key (or set `WHISPER_URL` for self-hosted)
+- `ZEN_API_KEY` — LLM API key
+- `WHISPER_API_KEY` — STT API key (or set `WHISPER_URL` for self-hosted)
 
 Run:
 
@@ -59,14 +59,14 @@ Run:
 |----------|---------|-------------|
 | `TELEGRAM_BOT_TOKEN` | (required) | Telegram bot token |
 | `ALLOWED_USER_IDS` | (empty) | Comma-separated allowed user IDs; empty = deny all |
-| `ZEN_API_BASE` | `https://opencode.ai/inference/openai/v1` | LLM API base URL |
-| `ZEN_MODEL` | `deepseek-v4.1-flash-free` | LLM model name |
-| `ZEN_API_KEY` | (required) | Zen API key |
-| `WHISPER_API_BASE` | `https://api.groq.com/openai/v1` | Whisper API base URL |
-| `WHISPER_API_KEY` | (required) | Whisper API key (Groq) |
-| `WHISPER_MODEL` | `whisper-large-v3-turbo` | Whisper model |
+| `ZEN_API_BASE` | (see `.env.example`) | LLM API base URL |
+| `ZEN_MODEL` | (see `.env.example`) | LLM model name |
+| `ZEN_API_KEY` | (required) | LLM API key |
+| `WHISPER_API_BASE` | (see `.env.example`) | STT API base URL |
+| `WHISPER_API_KEY` | (required) | STT API key |
+| `WHISPER_MODEL` | (see `.env.example`) | STT model |
 | `WHISPER_LANGUAGE` | `zh` | Transcription language hint |
-| `WHISPER_URL` | (empty) | Self-hosted Whisper URL (overrides Groq) |
+| `WHISPER_URL` | (empty) | Self-hosted STT URL (overrides remote STT) |
 | `REDIS_URL` | `redis://127.0.0.1:6379/0` | Redis for daily quotas |
 | `DAILY_REQUEST_LIMIT` | `50` | Requests per user per day |
 | `TIMEZONE` | `Asia/Taipei` | Timezone for daily quota reset |
@@ -96,10 +96,10 @@ bot/worker.py
 bot/opencode_client.py
   ├── chat()         — non-streaming LLM with retry
   ├── chat_stream()  — SSE streaming, propagates transport errors
-  └── tts()          — edge-tts synthesis
+  └── tts()          — TTS synthesis
 
 bot/whisper.py
-  └── transcribe()   — Groq Whisper with file streaming + retry
+  └── transcribe()   — Whisper-compatible STT with file streaming + retry
 
 bot/redis_client.py
   └── check_daily_quota() — Lua INCR + EXPIRE, fail-open
@@ -111,7 +111,7 @@ bot/retry.py
 ## Security
 
 - `.env` is never committed; keep permissions `600`
-- API keys are redacted from logs via `TokenFilter`
+- API keys are redacted from logs via `TokenRedactingFormatter`
 - Allowlist defaults to deny-all
 - Voice files capped at 10 MB to prevent abuse
 - Redis quota failures fail-open (bot stays up, but no quota enforcement during outage)
