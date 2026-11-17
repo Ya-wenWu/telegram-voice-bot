@@ -7,7 +7,8 @@ transcription, TTS replies, and daily quota enforcement via Redis.
 
 - **Text chat** — replies via an OpenAI-compatible LLM endpoint
 - **Voice messages** — transcribed via a configurable Whisper-compatible STT endpoint,
-  then the LLM response is synthesized with a configurable async TTS engine and sent back as MP3 audio
+  then the LLM response is synthesized with an async TTS engine (voice selectable
+  via `TTS_VOICE`) and sent back as MP3 audio
 - **Short sentences spoken** — replies such as "好。" are not dropped by TTS
 - **Daily quotas** — Redis Lua atomic counter with TTL, fail-open, `Asia/Taipei` timezone
 - **Single-worker mode** — `BOT_WORKERS=1`, `CONCURRENT_UPDATES=1` for low-memory hosts
@@ -60,8 +61,8 @@ Run:
 | `TELEGRAM_BOT_TOKEN` | (required) | Telegram bot token |
 | `ALLOWED_USER_IDS` | (empty) | Comma-separated allowed user IDs; empty = deny all |
 | `TTS_VOICE` | (see `.env.example`) | TTS voice ID |
-| `ZEN_API_BASE` | (see `.env.example`) | LLM API base URL |
-| `ZEN_MODEL` | (see `.env.example`) | LLM model name |
+| `ZEN_API_BASE` | (see `bot/config.py`) | LLM API base URL |
+| `ZEN_MODEL` | (see `bot/config.py`) | LLM model name |
 | `ZEN_API_KEY` | (required) | LLM API key |
 | `WHISPER_API_BASE` | (see `.env.example`) | STT API base URL |
 | `WHISPER_API_KEY` | (required) | STT API key |
@@ -143,8 +144,8 @@ For production on a 1 vCPU / 1.4 GiB host, consider:
 - `.github/workflows/ai-code-review.yml` hardcodes the AI review model ID.
   Once the `OPENCODE_REVIEW_MODEL` repository variable exists
   (**Settings → Secrets and variables → Actions → Variables**), switch the
-  workflow to `${{ vars.OPENCODE_REVIEW_MODEL }}` so no model ID stays in a
-  public file.
+  workflow to `${{ vars.OPENCODE_REVIEW_MODEL }}` so no model ID is hardcoded
+  in the workflow or its docs.
 
 ## License
 
