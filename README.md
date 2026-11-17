@@ -59,6 +59,7 @@ Run:
 |----------|---------|-------------|
 | `TELEGRAM_BOT_TOKEN` | (required) | Telegram bot token |
 | `ALLOWED_USER_IDS` | (empty) | Comma-separated allowed user IDs; empty = deny all |
+| `TTS_VOICE` | (see `.env.example`) | TTS voice ID |
 | `ZEN_API_BASE` | (see `.env.example`) | LLM API base URL |
 | `ZEN_MODEL` | (see `.env.example`) | LLM model name |
 | `ZEN_API_KEY` | (required) | LLM API key |
@@ -139,10 +140,11 @@ For production on a 1 vCPU / 1.4 GiB host, consider:
 
 ## Pending Changes
 
-- `.github/workflows/ai-code-review.yml` currently hardcodes the AI review
-  model ID. Planned: move it to a repository variable (`OPENCODE_REVIEW_MODEL`)
-  under **Settings → Secrets and variables → Actions → Variables**, once
-  configured, so the public workflow no longer embeds a specific model.
+- `.github/workflows/ai-code-review.yml` hardcodes the AI review model ID.
+  Once the `OPENCODE_REVIEW_MODEL` repository variable exists
+  (**Settings → Secrets and variables → Actions → Variables**), switch the
+  workflow to `${{ vars.OPENCODE_REVIEW_MODEL }}` so no model ID stays in a
+  public file.
 
 ## License
 
