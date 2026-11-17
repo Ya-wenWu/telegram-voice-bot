@@ -137,6 +137,13 @@ For production on a 1 vCPU / 1.4 GiB host, consider:
 - Log rotation via `logrotate`
 - Redis with memory limit (64 MB recommended)
 
+## Pending Changes
+
+- `.github/workflows/ai-code-review.yml` currently hardcodes the AI review
+  model ID. Planned: move it to a repository variable (`OPENCODE_REVIEW_MODEL`)
+  under **Settings → Secrets and variables → Actions → Variables**, once
+  configured, so the public workflow no longer embeds a specific model.
+
 ## License
 
 MIT
