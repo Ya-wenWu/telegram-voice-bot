@@ -23,6 +23,8 @@ TTS_CONCURRENCY = 3
 # Keep synthesized audio bounded; 16k characters would be hours of speech.
 TTS_MAX_CHARS = 1500
 TTS_MAX_SENTENCES = 40
+FFMPEG_CONCAT_TIMEOUT = 30.0
+MAX_QUEUE_SIZE = 20
 
 # Chinese + English sentence endings
 _SENTENCE_ENDS = frozenset("。！？；.!?\n")
@@ -58,29 +60,32 @@ def _scan_sentences(
     text: str,
     pos: int,
     min_len: int = 1,
+    scan_from: int | None = None,
 ) -> tuple[int, list[str]]:
     """Scan *text* from character position *pos* forward for complete sentences.
 
     Returns ``(new_pos, sentences)`` where *new_pos* advances past all
-    examined characters and *sentences* are complete (boundary-terminated)
-    fragments whose length >= *min_len* and contain actual content.
+    examined boundary-terminated fragments whose length >= *min_len* and
+    contain actual content.
+
+    When *scan_from* is supplied (the previous length of *text* that was
+    already inspected and known to contain no sentence boundaries since *pos*),
+    only newly arrived characters ``text[scan_from:]`` are inspected, keeping
+    streaming scans O(n) total instead of O(n^2).
 
     ``min_len`` defaults to 1 so short replies such as "好。" are still spoken;
     punctuation-only fragments are filtered out.
     """
     found: list[str] = []
-    while pos < len(text):
-        boundary = None
-        for i in range(pos, len(text)):
-            if text[i] in _SENTENCE_ENDS:
-                boundary = i
-                break
-        if boundary is None:
-            break
-        sentence = text[pos : boundary + 1].strip()
-        pos = boundary + 1
-        if len(sentence) >= min_len and _has_content(sentence):
-            found.append(sentence)
+    i = pos if scan_from is None else max(pos, scan_from)
+    n = len(text)
+    while i < n:
+        if text[i] in _SENTENCE_ENDS:
+            sentence = text[pos : i + 1].strip()
+            pos = i + 1
+            if len(sentence) >= min_len and _has_content(sentence):
+                found.append(sentence)
+        i += 1
     return pos, found
 
 
@@ -180,7 +185,19 @@ async def _concat_mp3(parts: list[bytes]) -> bytes:
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL,
         )
-        ret = await proc.wait()
+        try:
+            ret = await asyncio.wait_for(proc.wait(), timeout=FFMPEG_CONCAT_TIMEOUT)
+        except TimeoutError:
+            logger.warning(
+                "ffmpeg concat timed out after %.0fs, falling back to first part",
+                FFMPEG_CONCAT_TIMEOUT,
+            )
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+            await proc.wait()
+            return parts[0]
         if ret == 0 and os.path.exists(out_path):
             return await asyncio.to_thread(_read_bytes, out_path)
         logger.warning("ffmpeg concat failed (ret=%d), falling back to first part", ret)
@@ -205,8 +222,8 @@ def _read_bytes(path: str) -> bytes:
 
 
 class WorkerPool:
-    def __init__(self, num_workers: int = 5):
-        self._queue: asyncio.Queue[Task] = asyncio.Queue()
+    def __init__(self, num_workers: int = 5, max_queue_size: int = MAX_QUEUE_SIZE):
+        self._queue: asyncio.Queue[Task] = asyncio.Queue(maxsize=max_queue_size)
         self._num_workers = num_workers
         self._workers: list[asyncio.Task] = []
         self._running = False
@@ -234,7 +251,8 @@ class WorkerPool:
         logger.info("Worker pool stopped")
 
     async def enqueue(self, task: Task) -> None:
-        await self._queue.put(task)
+        """Enqueue a task immediately, raising asyncio.QueueFull when full."""
+        self._queue.put_nowait(task)
 
     async def _run(self, idx: int) -> None:
         while self._running:
@@ -270,10 +288,11 @@ class WorkerPool:
 
         typing_task = asyncio.create_task(_typing_loop(task.bot, chat_id, stop_event))
         full_text = ""
+        tts_tasks: list[asyncio.Task[bytes]] = []
         try:
-            tts_tasks: list[asyncio.Task[bytes]] = []
             tts_chars = 0
             pos = 0
+            scan_pos = 0
             last_edit = 0.0
 
             def _schedule_tts_fragment(fragment: str) -> bool:
@@ -303,19 +322,22 @@ class WorkerPool:
                 tts_tasks.append(asyncio.create_task(self._tts_limited(fragment)))
                 return True
 
-            def queue_tts(text_so_far: str, cursor: int) -> int:
+            def queue_tts(
+                text_so_far: str, cursor: int, scanned: int
+            ) -> tuple[int, int]:
                 """Queue TTS for complete sentences, respecting both caps."""
-                cursor, new = _scan_sentences(text_so_far, cursor)
+                cursor, new = _scan_sentences(text_so_far, cursor, scan_from=scanned)
                 for sentence in new:
                     if not _schedule_tts_fragment(sentence):
                         break
-                return cursor
+                return cursor, len(text_so_far)
 
-            def flush_tts(text_so_far: str, cursor: int) -> int:
+            def flush_tts(text_so_far: str, cursor: int) -> tuple[int, int]:
                 """Flush any trailing unpunctuated text within TTS caps."""
                 if cursor < len(text_so_far):
                     _schedule_tts_fragment(text_so_far[cursor:])
-                return len(text_so_far)
+                end = len(text_so_far)
+                return end, end
 
             # Phase 1 — streaming (fast, progressive)
             stream_ok = True
@@ -345,16 +367,16 @@ class WorkerPool:
                                 e,
                             )
                     if task.is_voice:
-                        pos = queue_tts(full_text, pos)
+                        pos, scan_pos = queue_tts(full_text, pos, scan_pos)
                 if task.is_voice:
-                    pos = flush_tts(full_text, pos)
+                    pos, scan_pos = flush_tts(full_text, pos)
             except (httpx.TransportError, httpx.HTTPStatusError):
                 logger.warning(
                     "Stream failed for chat %d, falling back to non-streaming", chat_id
                 )
                 stream_ok = False
                 if task.is_voice:
-                    pos = flush_tts(full_text, pos)
+                    pos, scan_pos = flush_tts(full_text, pos)
 
             # Phase 2 — fallback to non-streaming if stream failed
             if not stream_ok or not full_text:
@@ -364,6 +386,12 @@ class WorkerPool:
                     logger.exception("Non-streaming fallback failed")
                     complete = None
                 if complete:
+                    if len(complete) > MAX_RESPONSE_CHARS:
+                        complete = complete[:MAX_RESPONSE_CHARS]
+                        logger.warning(
+                            "Fallback response exceeded %d chars; truncating",
+                            MAX_RESPONSE_CHARS,
+                        )
                     # Partial streaming output is discarded; cancel its TTS work
                     # and rescan the complete text from the beginning.
                     for t in tts_tasks:
@@ -372,6 +400,7 @@ class WorkerPool:
                     tts_tasks = []
                     tts_chars = 0
                     pos = 0
+                    scan_pos = 0
                     full_text = complete
                     try:
                         await task.bot.edit_message_text(
@@ -386,8 +415,8 @@ class WorkerPool:
                             e,
                         )
                     if task.is_voice:
-                        pos = queue_tts(full_text, pos)
-                        pos = flush_tts(full_text, pos)
+                        pos, scan_pos = queue_tts(full_text, pos, scan_pos)
+                        pos, scan_pos = flush_tts(full_text, pos)
 
             if not full_text:
                 await task.bot.edit_message_text(
@@ -441,7 +470,10 @@ class WorkerPool:
                 )
         finally:
             stop_event.set()
-            await asyncio.gather(typing_task, return_exceptions=True)
+            pending_tts = [t for t in tts_tasks if not t.done()]
+            for t in pending_tts:
+                t.cancel()
+            await asyncio.gather(typing_task, *pending_tts, return_exceptions=True)
 
     async def _deliver_text(self, task: Task, msg_id: int, text: str) -> None:
         """Send or update the final text message after streaming completes."""

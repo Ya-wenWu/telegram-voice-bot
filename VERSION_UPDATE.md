@@ -2,6 +2,7 @@
 
 | 日期 | 修改內容名稱 | 修改內容大綱 | 修改者 | 註記 |
 |---|---|---|---|---|
+| 2026-11-19 | v1.7.2 Performance, Reliability & Security Hardening | `_scan_sentences()` 支援增量游標消除事件迴圈 O(n²) 瓶頸；語音檔直接以路徑串流傳給 Whisper 減少記憶體峰值；`WorkerPool` 加上有界佇列背壓、`ffmpeg` 30 秒超時保護、fallback 長度截斷與關閉時取消殘留 TTS 任務；`ZoneInfo` 移入 Redis fail-open 保護並擴展 `TMP_DIR` 波浪號；集中 `BOT_WORKERS`/`CONCURRENT_UPDATES` 設定；`TokenRedactingFormatter` 改為完全遮蔽並涵蓋 URL 密碼，移除未掛載死碼 `TokenFilter`；重試/Redis 日誌改只記錄例外型別；補齊單元測試 | antigravity | P0+P1 核心工程加固；保留既有歷史版本紀錄 |
 | 2026-11-19 | Documentation Consistency Fix | 統一 README.md 與 .env.example 的 provider-neutral 設定說明；補齊 TTS、ZEN 與 Whisper 設定；修正重複設定鍵與 TokenRedactingFormatter 文件引用。 | claudeyw | 僅文件變更；內建預設值以 bot/config.py 為準 |
 | 2026-11-14 | v1.7.1 Security & Reliability Hardening | SSE 傳輸錯誤不再被吞，worker 可正確 fallback 到非串流 chat；加入 429/5xx 指數退避重試（LLM 與 Whisper）；TTS 加上字數/句數上限防止單一長回覆拖垮 1 vCPU；Redis 每日額度改用 Asia/Taipei 時區；TokenFilter 修復 dict-args 崩潰 Bug 並加入 WHISPER_API_KEY 日誌遮罩；新增 tests/test_handlers.py（handlers 覆蓋率 0%→100%）；新增 README.md；修復 ruff lint 警告；刪除 bot/openrouter.py 死程式碼 | claudeyw | 所有變更未洩漏 API 金鑰；.env 未被追蹤；ruff 全通過；pytest 85 passed |
 | 2026-06-12 | v1.7.0 Streaming Pipeline (Google 標準) | worker 從順序 await 改為 streaming pipeline: LLM stream token → 即時更新 Telegram 文字 → 句子級 concurrent TTS → ffmpeg concat 合併音檔。新增 chat_stream() SSE 串流、_split_sentences() 中英文斷句、_concat_mp3() ffmpeg 合併。 | claudeyw | **Root Cause:** 原始架構是 Cascading Pipeline — await LLM 完整回應 → await TTS 完整合成 → 才送出。使用者看到文字和音訊的延遲是累加的。**Google 標準:** 每個元件獨立 async generator，句子級 pipeline 讓 TTS 與 LLM 重疊執行，文字即時顯示。 |

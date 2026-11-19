@@ -1,15 +1,20 @@
 import asyncio
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 
+import bot.worker as worker_mod
 from bot.worker import Task, WorkerPool
 
 
 @pytest.fixture()
 def mock_bot():
     bot = MagicMock()
-    bot.send_message = AsyncMock()
+    placeholder = MagicMock()
+    placeholder.message_id = 999
+    bot.send_message = AsyncMock(return_value=placeholder)
+    bot.edit_message_text = AsyncMock()
     bot.send_audio = AsyncMock()
     bot.send_chat_action = AsyncMock()
     return bot
@@ -37,6 +42,9 @@ async def test_worker_processes_single_task(mock_bot):
         processed.append(task)
         await original_process(task)
 
+    async def fake_stream(chat_id, text):
+        yield "Hello back!"
+
     pool._process = tracking_process
 
     task = Task(
@@ -46,12 +54,16 @@ async def test_worker_processes_single_task(mock_bot):
         bot=mock_bot,
     )
 
-    await pool.enqueue(task)
-    await asyncio.sleep(0.5)
+    with patch.object(worker_mod, "chat_stream", fake_stream):
+        await pool.enqueue(task)
+        await asyncio.sleep(0.2)
 
     assert len(processed) == 1
     assert processed[0].text == "Hello"
     assert processed[0].chat_id == 123
+    mock_bot.edit_message_text.assert_any_await(
+        chat_id=123, message_id=999, text="Hello back!"
+    )
 
     await pool.stop()
 
@@ -153,3 +165,106 @@ async def test_enqueue_multiple_tasks_with_limited_workers():
     assert max_active <= 2, f"Expected at most 2 concurrent tasks, got {max_active}"
 
     await pool.stop()
+
+
+@pytest.mark.asyncio()
+async def test_enqueue_raises_when_queue_full(mock_bot):
+    pool = WorkerPool(num_workers=1, max_queue_size=1)
+    task = Task(chat_id=1, reply_to_message_id=1, text="a", bot=mock_bot)
+    await pool.enqueue(task)
+    with pytest.raises(asyncio.QueueFull):
+        await pool.enqueue(task)
+
+
+@pytest.mark.asyncio()
+async def test_stream_failure_falls_back_and_truncates_response(mock_bot):
+    pool = WorkerPool(num_workers=1)
+
+    async def broken_stream(chat_id, text):
+        yield "partial"
+        raise httpx.ReadError("reset")
+
+    huge_reply = "A" * (worker_mod.MAX_RESPONSE_CHARS + 500)
+    task = Task(chat_id=1, reply_to_message_id=2, text="hi", bot=mock_bot)
+
+    with (
+        patch.object(worker_mod, "chat_stream", broken_stream),
+        patch.object(worker_mod, "chat", AsyncMock(return_value=huge_reply)),
+    ):
+        await pool._process(task)
+
+    delivered = mock_bot.edit_message_text.await_args_list[-1].kwargs["text"]
+    followups = [
+        call.kwargs["text"]
+        for call in mock_bot.send_message.await_args_list[1:]
+        if "text" in call.kwargs
+    ]
+    total_len = len(delivered) + sum(len(c) for c in followups)
+    assert total_len == worker_mod.MAX_RESPONSE_CHARS
+
+
+@pytest.mark.asyncio()
+async def test_voice_tts_respects_char_and_sentence_budgets(mock_bot):
+    pool = WorkerPool(num_workers=1)
+    spoken: list[str] = []
+
+    async def fake_stream(chat_id, text):
+        yield "第一句。"
+        yield "第二句很長很長很長。"
+        yield "第三句不該被唸到"
+
+    async def fake_tts(fragment: str) -> bytes:
+        spoken.append(fragment)
+        return b"mp3"
+
+    task = Task(
+        chat_id=1, reply_to_message_id=2, text="hi", bot=mock_bot, is_voice=True
+    )
+
+    with (
+        patch.object(worker_mod, "chat_stream", fake_stream),
+        patch.object(worker_mod, "tts", side_effect=fake_tts),
+        patch.object(worker_mod, "_concat_mp3", AsyncMock(return_value=b"combined")),
+        patch.object(worker_mod, "TTS_MAX_CHARS", 8),
+    ):
+        await pool._process(task)
+
+    assert sum(len(s) for s in spoken) == 8
+    assert spoken[0] == "第一句。"
+    assert len(spoken) == 2
+    mock_bot.send_audio.assert_awaited_once()
+
+
+@pytest.mark.asyncio()
+async def test_stop_cancels_in_flight_tts_tasks(mock_bot):
+    pool = WorkerPool(num_workers=1)
+    tts_started = asyncio.Event()
+    tts_cancelled = asyncio.Event()
+
+    async def slow_stream(chat_id, text):
+        yield "第一句。"
+        await asyncio.sleep(10)
+
+    async def slow_tts(fragment: str) -> bytes:
+        tts_started.set()
+        try:
+            await asyncio.sleep(10)
+            return b"mp3"
+        except asyncio.CancelledError:
+            tts_cancelled.set()
+            raise
+
+    await pool.start()
+    task = Task(
+        chat_id=1, reply_to_message_id=2, text="hi", bot=mock_bot, is_voice=True
+    )
+
+    with (
+        patch.object(worker_mod, "chat_stream", slow_stream),
+        patch.object(worker_mod, "tts", side_effect=slow_tts),
+    ):
+        await pool.enqueue(task)
+        await asyncio.wait_for(tts_started.wait(), timeout=2.0)
+        await pool.stop()
+
+    assert tts_cancelled.is_set()
