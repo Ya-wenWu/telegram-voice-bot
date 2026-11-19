@@ -64,14 +64,14 @@ Run:
 |----------|---------|-------------|
 | `TELEGRAM_BOT_TOKEN` | (required) | Telegram bot token |
 | `ALLOWED_USER_IDS` | (empty) | Comma-separated allowed user IDs; empty = deny all |
-| `TTS_VOICE` | `zh-CN-XiaoxiaoNeural` | TTS voice ID |
-| `ZEN_API_BASE` | `https://opencode.ai/inference/openai/v1` | LLM API base URL |
-| `ZEN_MODEL` | `deepseek-v4.1-flash-free` | LLM model name |
+| `TTS_VOICE` | (see `bot/config.py`) | TTS voice ID |
+| `ZEN_API_BASE` | (see `bot/config.py`) | LLM API base URL |
+| `ZEN_MODEL` | (see `bot/config.py`) | LLM model name |
 | `ZEN_API_KEY` | (required) | LLM API key |
-| `WHISPER_API_BASE` | `https://api.groq.com/openai/v1` | STT API base URL |
+| `WHISPER_API_BASE` | (see `bot/config.py`) | STT API base URL |
 | `WHISPER_API_KEY` | (required) | STT API key |
-| `WHISPER_MODEL` | `whisper-large-v3-turbo` | STT model |
-| `WHISPER_LANGUAGE` | `zh` | Transcription language hint |
+| `WHISPER_MODEL` | (see `bot/config.py`) | STT model |
+| `WHISPER_LANGUAGE` | (see `bot/config.py`) | Transcription language hint |
 | `WHISPER_URL` | (empty) | Self-hosted STT URL (overrides the remote endpoint) |
 | `REDIS_URL` | `redis://127.0.0.1:6379/0` | Redis for daily quotas |
 | `DAILY_REQUEST_LIMIT` | `50` | Requests per user per day |
@@ -152,7 +152,7 @@ For production on a 1 vCPU / 1.4 GiB host, consider:
   Once the `OPENCODE_REVIEW_MODEL` repository variable exists
   (**Settings → Secrets and variables → Actions → Variables**), switch the
   workflow to `${{ vars.OPENCODE_REVIEW_MODEL }}` so no model ID is hardcoded
-  in the workflow or its docs.
+  in the AI-review workflow or its documentation.
 
 ## License
 
