@@ -45,13 +45,12 @@ chmod 600 .env
 Edit `.env` with at minimum:
 - `TELEGRAM_BOT_TOKEN` — from @BotFather (required; the bot exits without it)
 - `ALLOWED_USER_IDS` — comma-separated Telegram user IDs (empty = deny all)
-- `ZEN_API_KEY` — OpenCode Zen API key (required; the bot exits without it)
-- `WHISPER_API_KEY` — Groq API key (or set `WHISPER_URL` for self-hosted);
+- `ZEN_API_KEY` — LLM API key (required; the bot exits without it)
+- `WHISPER_API_KEY` — STT API key (or set `WHISPER_URL` for self-hosted);
   without either, text chat works but voice transcription fails
 
 Redis is optional at runtime: if it is unreachable, quotas are simply not
 enforced (fail-open).
-
 
 Run:
 
@@ -65,16 +64,15 @@ Run:
 |----------|---------|-------------|
 | `TELEGRAM_BOT_TOKEN` | (required) | Telegram bot token |
 | `ALLOWED_USER_IDS` | (empty) | Comma-separated allowed user IDs; empty = deny all |
-| `TTS_VOICE` | (see `.env.example`) | TTS voice ID |
-| `ZEN_API_BASE` | (see `bot/config.py`) | LLM API base URL |
-| `ZEN_MODEL` | (see `bot/config.py`) | LLM model name |
+| `TTS_VOICE` | `zh-CN-XiaoxiaoNeural` | TTS voice ID |
+| `ZEN_API_BASE` | `https://opencode.ai/inference/openai/v1` | LLM API base URL |
+| `ZEN_MODEL` | `deepseek-v4.1-flash-free` | LLM model name |
 | `ZEN_API_KEY` | (required) | LLM API key |
-| `WHISPER_API_BASE` | (see `.env.example`) | STT API base URL |
+| `WHISPER_API_BASE` | `https://api.groq.com/openai/v1` | STT API base URL |
 | `WHISPER_API_KEY` | (required) | STT API key |
-| `WHISPER_MODEL` | (see `.env.example`) | STT model |
+| `WHISPER_MODEL` | `whisper-large-v3-turbo` | STT model |
 | `WHISPER_LANGUAGE` | `zh` | Transcription language hint |
-| `WHISPER_URL` | (empty) | Self-hosted Whisper URL (overrides Groq) |
-| `TTS_VOICE` | `zh-CN-XiaoxiaoNeural` | edge-tts voice for spoken replies |
+| `WHISPER_URL` | (empty) | Self-hosted STT URL (overrides the remote endpoint) |
 | `REDIS_URL` | `redis://127.0.0.1:6379/0` | Redis for daily quotas |
 | `DAILY_REQUEST_LIMIT` | `50` | Requests per user per day |
 | `TIMEZONE` | `Asia/Taipei` | Timezone for daily quota reset |
