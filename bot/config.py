@@ -58,7 +58,11 @@ ALLOWED_USER_IDS: list[int] = _parse_user_ids(get("ALLOWED_USER_IDS", ""))
 
 # Resource guards (tuned for a 1 vCPU / 1.4 GiB host)
 MAX_VOICE_BYTES = get_int("MAX_VOICE_BYTES", 10 * 1024 * 1024)
-TMP_DIR = Path(get("TMP_DIR", str(HOME / ".cache" / "telegram-voice-bot" / "tmp")))
+TMP_DIR = Path(
+    get("TMP_DIR", str(HOME / ".cache" / "telegram-voice-bot" / "tmp"))
+).expanduser()
+BOT_WORKERS = max(1, get_int("BOT_WORKERS", 1))
+CONCURRENT_UPDATES = max(1, get_int("CONCURRENT_UPDATES", 1))
 
 # Redis is used only for durable daily quotas; failures fail open.
 REDIS_URL = get("REDIS_URL", "redis://127.0.0.1:6379/0")

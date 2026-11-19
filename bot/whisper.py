@@ -35,7 +35,7 @@ async def transcribe(audio: bytes | str | os.PathLike[str]) -> str:
         return await _transcribe_chunk(bytes(audio))
 
     path = os.fspath(audio)
-    size = os.path.getsize(path)
+    size = await asyncio.to_thread(os.path.getsize, path)
     if size == 0:
         return ""
     if size > MAX_AUDIO_BYTES:
@@ -74,8 +74,8 @@ async def _transcribe_chunk(chunk: bytes | BinaryIO) -> str:
     async def _send() -> httpx.Response:
         # File handles are consumed by the first upload; rewind so a retry
         # does not send an empty body.
-        if hasattr(chunk, "seek"):
-            chunk.seek(0)
+        if not isinstance(chunk, bytes) and hasattr(chunk, "seek"):
+            await asyncio.to_thread(chunk.seek, 0)
         files = {"file": ("audio.ogg", chunk, "audio/ogg")}
         return await bot.http_client.get_client().post(
             url, files=files, data=data, headers=headers

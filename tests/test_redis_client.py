@@ -1,3 +1,4 @@
+import logging
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -53,3 +54,20 @@ class TestDailyQuota:
             client.eval.reset_mock()
             assert await rc.check_daily_quota(1, limit=5) is True
             client.eval.assert_not_awaited()
+
+    @pytest.mark.asyncio()
+    async def test_invalid_timezone_fails_open(self):
+        with patch.object(rc, "TIMEZONE", "Invalid/Timezone"):
+            assert await rc.check_daily_quota(1, limit=5) is True
+            assert rc._disabled_until > 0
+
+    @pytest.mark.asyncio()
+    async def test_close_redis_logs_only_error_type(self, caplog):
+        client = AsyncMock()
+        client.aclose.side_effect = RuntimeError("redis://:secretpass@host:6379/0")
+        rc._client = client
+        with caplog.at_level(logging.DEBUG, logger="bot.redis_client"):
+            await rc.close_redis()
+        assert rc._client is None
+        assert "RuntimeError" in caplog.text
+        assert "secretpass" not in caplog.text

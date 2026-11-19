@@ -71,21 +71,19 @@ async def request_with_retry(
         except TRANSIENT_EXCEPTIONS as exc:
             if attempt == MAX_RETRIES:
                 logger.warning(
-                    "%s failed after %d retries due to %s: %s",
+                    "%s failed after %d retries due to %s",
                     label,
                     MAX_RETRIES,
                     type(exc).__name__,
-                    exc,
                 )
                 raise
             delay = float(2**attempt)
             if delay > MAX_RETRY_WAIT:
                 logger.warning(
-                    "%s failed after %d retries due to %s: %s (cap %.0fs)",
+                    "%s failed after %d retries due to %s (cap %.0fs)",
                     label,
                     MAX_RETRIES,
                     type(exc).__name__,
-                    exc,
                     MAX_RETRY_WAIT,
                 )
                 raise

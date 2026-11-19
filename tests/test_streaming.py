@@ -1,10 +1,18 @@
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
 
 from bot.opencode_client import chat_stream
-from bot.worker import _concat_mp3, _scan_sentences, _split_sentences
+from bot.worker import (
+    _concat_mp3,
+    _scan_sentences,
+    _split_message,
+    _split_sentences,
+    _take_prefix,
+    _utf16_len,
+)
 
 # ── _split_sentences ────────────────────────────────────────────────────────
 
@@ -114,6 +122,32 @@ async def test_concat_missing_ffmpeg_raises():
         pytest.raises(FileNotFoundError),
     ):
         await _concat_mp3([b"a", b"b"])
+
+
+@pytest.mark.asyncio()
+async def test_concat_ffmpeg_timeout_kills_and_falls_back():
+    proc = MagicMock()
+    proc.kill = MagicMock()
+    wait_calls = 0
+
+    async def slow_wait():
+        nonlocal wait_calls
+        wait_calls += 1
+        if wait_calls == 1:
+            await asyncio.sleep(5)
+        return -9
+
+    proc.wait = AsyncMock(side_effect=slow_wait)
+
+    mock_exec = AsyncMock(return_value=proc)
+    with (
+        patch("bot.worker.asyncio.create_subprocess_exec", mock_exec),
+        patch("bot.worker.FFMPEG_CONCAT_TIMEOUT", 0.01),
+    ):
+        result = await _concat_mp3([b"fallback_first", b"second"])
+
+    assert result == b"fallback_first"
+    proc.kill.assert_called_once()
 
 
 @pytest.mark.asyncio()
@@ -447,3 +481,41 @@ class TestScanSentences:
         assert result == ["第一句。", "第二句。", "第三句。"]
         pos, result = _scan_sentences(full, pos)
         assert result == []
+
+    def test_incremental_scan_from_matches_full_scan(self):
+        tokens = ["今天", "天氣", "真好。第", "二句", "！尾", "巴。"]
+        dispatched: list[str] = []
+        full_text = ""
+        pos = 0
+        scan_pos = 0
+        for token in tokens:
+            full_text += token
+            pos, found = _scan_sentences(full_text, pos, scan_from=scan_pos)
+            scan_pos = len(full_text)
+            dispatched.extend(found)
+        assert dispatched == ["今天天氣真好。", "第二句！", "尾巴。"]
+        assert pos == len(full_text)
+
+
+# ── _take_prefix / _split_message ───────────────────────────────────────────
+
+
+class TestSplitMessage:
+    def test_short_text_fits_single_chunk(self):
+        assert _split_message("hello", limit=10) == ["hello"]
+        assert _split_message("", limit=10) == []
+
+    def test_respects_utf16_surrogate_pairs(self):
+        # Each emoji takes 2 UTF-16 code units.
+        text = "😀" * 5
+        assert _utf16_len(text) == 10
+        prefix, rest = _take_prefix(text, limit=5)
+        assert prefix == "😀😀"
+        assert rest == "😀😀😀"
+        assert _utf16_len(prefix) <= 5
+
+    def test_prefers_natural_newline_or_space_boundary(self):
+        text = "aaaaaaaaaa\nbbbbbbbbbb"
+        chunks = _split_message(text, limit=14)
+        assert chunks == ["aaaaaaaaaa\n", "bbbbbbbbbb"]
+        assert all(_utf16_len(c) <= 14 for c in chunks)

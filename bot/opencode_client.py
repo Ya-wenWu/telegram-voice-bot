@@ -17,12 +17,14 @@ from bot.retry import request_with_retry
 
 logger = logging.getLogger(__name__)
 
-HEADERS = {
-    "Authorization": f"Bearer {ZEN_API_KEY}",
-    "Content-Type": "application/json",
-}
-
 MAX_TEXT_LEN = 8000
+
+
+def _headers() -> dict[str, str]:
+    headers = {"Content-Type": "application/json"}
+    if ZEN_API_KEY:
+        headers["Authorization"] = f"Bearer {ZEN_API_KEY}"
+    return headers
 
 
 def _messages(text: str) -> list[dict[str, str]]:
@@ -39,7 +41,7 @@ async def chat(chat_id: int, text: str) -> str:
         return await bot.http_client.get_client().post(
             f"{ZEN_API_BASE}/chat/completions",
             json=body,
-            headers=HEADERS,
+            headers=_headers(),
         )
 
     resp = await request_with_retry(_send, label="LLM request")
@@ -60,7 +62,7 @@ async def chat_stream(chat_id: int, text: str):
         "POST",
         f"{ZEN_API_BASE}/chat/completions",
         json=body,
-        headers=HEADERS,
+        headers=_headers(),
     ) as resp:
         resp.raise_for_status()
         async for line in resp.aiter_lines():

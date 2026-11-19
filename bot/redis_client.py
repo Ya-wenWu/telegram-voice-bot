@@ -52,11 +52,11 @@ async def check_daily_quota(user_id: int, limit: int = DAILY_REQUEST_LIMIT) -> b
     if time.monotonic() < _disabled_until:
         return True
 
-    key = f"quota:{user_id}:{datetime.now(ZoneInfo(TIMEZONE)):%Y-%m-%d}"
     try:
+        key = f"quota:{user_id}:{datetime.now(ZoneInfo(TIMEZONE)):%Y-%m-%d}"
         allowed = await _get_client().eval(_QUOTA_SCRIPT, 1, key, 172800, limit)
         return bool(int(allowed))
-    except Exception as exc:  # noqa: BLE001 - fail open on any Redis failure
+    except Exception as exc:  # noqa: BLE001 - fail open on any Redis/timezone failure
         _disabled_until = time.monotonic() + _FAILURE_COOLDOWN_SEC
         logger.warning(
             "Redis quota check failed; allowing request for %ss (error_type=%s)",
@@ -72,5 +72,5 @@ async def close_redis() -> None:
         try:
             await _client.aclose()
         except Exception as exc:  # noqa: BLE001 - shutdown must not raise
-            logger.debug("Redis close failed: %s", exc)
+            logger.debug("Redis close failed (error_type=%s)", type(exc).__name__)
     _client = None

@@ -3,7 +3,6 @@ import logging
 import os
 import tempfile
 import time
-from pathlib import Path
 from typing import Any
 
 from telegram import Update
@@ -106,9 +105,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if len(text) > MAX_TEXT_LEN:
         await _reply(update, "Message too long.")
         return
-    if not await check_daily_quota(user_id):
-        await _reply(update, "今日額度已用完，請明天再試。")
-        return
 
     chat_id = _get_chat_id(update)
     message_id = _get_message_id(update)
@@ -119,18 +115,26 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await _reply(update, "⚠️ 系統忙碌，請稍後再試")
         return
 
-    await worker_pool.enqueue(
-        Task(
-            chat_id=chat_id,
-            reply_to_message_id=message_id,
-            text=text,
-            bot=context.bot,
+    if not await check_daily_quota(user_id):
+        await _reply(update, "今日額度已用完，請明天再試。")
+        return
+
+    try:
+        await worker_pool.enqueue(
+            Task(
+                chat_id=chat_id,
+                reply_to_message_id=message_id,
+                text=text,
+                bot=context.bot,
+            )
         )
-    )
+    except asyncio.QueueFull:
+        logger.warning("Worker queue full; rejecting text task for chat %d", chat_id)
+        await _reply(update, "⚠️ 系統忙碌，請稍後再試")
 
 
 async def _download_and_transcribe(voice: Any) -> str:
-    """Download voice file to disk, read bytes asynchronously, and clean up."""
+    """Download voice file to disk, stream-transcribe from path, and clean up."""
     await asyncio.to_thread(TMP_DIR.mkdir, parents=True, exist_ok=True)
     tmp_path = await asyncio.to_thread(_create_temp_voice_path)
 
@@ -140,8 +144,7 @@ async def _download_and_transcribe(voice: Any) -> str:
         size = await asyncio.to_thread(os.path.getsize, tmp_path)
         if size > MAX_VOICE_BYTES:
             raise ValueError("Voice file exceeds MAX_VOICE_BYTES after download")
-        audio_bytes = await asyncio.to_thread(Path(tmp_path).read_bytes)
-        return await transcribe(audio_bytes)
+        return await transcribe(tmp_path)
     finally:
         try:
             await asyncio.to_thread(os.unlink, tmp_path)
@@ -162,26 +165,31 @@ async def _enqueue_voice_task(
     text: str,
 ) -> None:
     """Update status message and enqueue the transcribed voice task."""
-    preview = text if len(text) <= 3800 else text[:3800] + "..."
-    await _edit_or_ignore(msg, f"You: {preview}\n\n⏳ Thinking...")
-
     chat_id = _get_chat_id(update)
     message_id = _get_message_id(update)
     if chat_id is None or message_id is None or worker_pool is None:
         logger.warning(
             "Cannot enqueue voice task: missing chat_id/message_id/worker_pool"
         )
+        await _edit_or_ignore(msg, "⚠️ 系統忙碌，請稍後再試")
         return
 
-    await worker_pool.enqueue(
-        Task(
-            chat_id=chat_id,
-            reply_to_message_id=message_id,
-            text=text,
-            bot=context.bot,
-            is_voice=True,
+    preview = text if len(text) <= 3800 else text[:3800] + "..."
+    await _edit_or_ignore(msg, f"You: {preview}\n\n⏳ Thinking...")
+
+    try:
+        await worker_pool.enqueue(
+            Task(
+                chat_id=chat_id,
+                reply_to_message_id=message_id,
+                text=text,
+                bot=context.bot,
+                is_voice=True,
+            )
         )
-    )
+    except asyncio.QueueFull:
+        logger.warning("Worker queue full; rejecting voice task for chat %d", chat_id)
+        await _edit_or_ignore(msg, "⚠️ 系統忙碌，請稍後再試")
 
 
 def _check_voice_file(voice: Any | None) -> str | None:
@@ -194,7 +202,7 @@ def _check_voice_file(voice: Any | None) -> str | None:
 
 
 async def _validate_voice_request(update: Update) -> tuple[Any | None, str | None]:
-    """Validate auth, rate limit, voice attachment, size, and daily quota."""
+    """Validate auth, rate limit, voice attachment, capacity, and daily quota."""
     user_id, reason = _check_auth_and_throttle(update)
     if user_id is None:
         return None, reason or "Unauthorized."
@@ -203,6 +211,16 @@ async def _validate_voice_request(update: Update) -> tuple[Any | None, str | Non
     voice_error = _check_voice_file(voice)
     if voice_error:
         return None, voice_error
+
+    if (
+        _get_chat_id(update) is None
+        or _get_message_id(update) is None
+        or worker_pool is None
+    ):
+        logger.warning(
+            "Cannot accept voice task: missing chat_id/message_id/worker_pool"
+        )
+        return None, "⚠️ 系統忙碌，請稍後再試"
 
     if not await check_daily_quota(user_id):
         return None, "今日額度已用完，請明天再試。"

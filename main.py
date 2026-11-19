@@ -3,6 +3,7 @@ import logging
 import os
 import sys
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters
@@ -10,6 +11,9 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters
 from bot import handlers
 from bot.config import (
     ALLOWED_USER_IDS,
+    BOT_WORKERS,
+    CONCURRENT_UPDATES,
+    REDIS_URL,
     TELEGRAM_BOT_TOKEN,
     TMP_DIR,
     WHISPER_API_KEY,
@@ -24,27 +28,36 @@ from bot.worker import WorkerPool
 LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 
 
+def _extract_url_secret(url: str) -> str | None:
+    """Return embedded password from a URL, if any."""
+    if not url:
+        return None
+    try:
+        return urlsplit(url).password or None
+    except ValueError:
+        return None
+
+
 class TokenRedactingFormatter(logging.Formatter):
-    """Formatting layer that redacts secrets from all log output.
+    """Formatting layer that fully redacts secrets from all log output.
 
     Applied at the output handler/formatter level so that descendant logger
-    records and formatted exception tracebacks are sanitized before being
-    emitted to the stream.
+    records, mapping/non-string args, and formatted exception tracebacks are
+    sanitized before being emitted to the stream.
     """
 
     def __init__(self, tokens: list[str], *args, **kwargs):
         kwargs.setdefault("fmt", LOG_FORMAT)
         super().__init__(*args, **kwargs)
-        self._tokens = [t for t in tokens if t]
+        # Sort longest first so a shorter secret cannot partially corrupt a
+        # longer secret containing it as a substring.
+        self._tokens = sorted({t for t in tokens if t}, key=len, reverse=True)
 
     def format(self, record: logging.LogRecord) -> str:
         msg = super().format(record)
         for token in self._tokens:
-            if token and token in msg:
-                replacement = (
-                    f"***{token[:4]}...{token[-4:]}***" if len(token) > 20 else "***"
-                )
-                msg = msg.replace(token, replacement)
+            if token in msg:
+                msg = msg.replace(token, "***REDACTED***")
         return msg
 
 
@@ -57,7 +70,17 @@ logging.basicConfig(
 # Apply token redaction at the output handler/formatter level so that
 # descendant logger records and formatted exception tracebacks are sanitized
 # before being emitted.
-_secrets = [s for s in (TELEGRAM_BOT_TOKEN, ZEN_API_KEY, WHISPER_API_KEY) if s]
+_secrets = [
+    s
+    for s in (
+        TELEGRAM_BOT_TOKEN,
+        ZEN_API_KEY,
+        WHISPER_API_KEY,
+        _extract_url_secret(REDIS_URL),
+        _extract_url_secret(WHISPER_URL),
+    )
+    if s
+]
 if _secrets:
     _handler = logging.StreamHandler(sys.stdout)
     _handler.setFormatter(TokenRedactingFormatter(_secrets, fmt=LOG_FORMAT))
@@ -67,15 +90,14 @@ if _secrets:
 logger = logging.getLogger(__name__)
 
 _STATE_DIR = Path.home() / ".local" / "state" / "telegram-voice-bot"
-_STATE_DIR.mkdir(parents=True, exist_ok=True)
-TMP_DIR.mkdir(parents=True, exist_ok=True)
 LOCK_FILE = str(_STATE_DIR / "bot.lock")
-_LOCK_FD = None
+_LOCK_FD: int | None = None
 
 
 def _acquire_lock() -> None:
     global _LOCK_FD
     try:
+        _STATE_DIR.mkdir(parents=True, exist_ok=True)
         fd = os.open(LOCK_FILE, os.O_RDWR | os.O_CREAT, 0o600)
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         os.ftruncate(fd, 0)
@@ -97,53 +119,13 @@ def _release_lock() -> None:
         pass
 
 
-class TokenFilter(logging.Filter):
-    def __init__(self, token: str):
-        super().__init__()
-        self._token = token
-        self._replacement = (
-            f"***{token[:4]}...{token[-4:]}***" if len(token) > 20 else "***"
-        )
-
-    def _mask(self, value: object) -> object:
-        if isinstance(value, str):
-            return (
-                value.replace(self._token, self._replacement)
-                if self._token in value
-                else value
-            )
-        # Redact string representation of non-string args (e.g. HTTP URL objects)
-        # so tokens embedded in request URLs cannot bypass masking.
-        return (
-            str(value).replace(self._token, self._replacement)
-            if self._token in str(value)
-            else str(value)
-        )
-
-    def filter(self, record):
-        msg = record.msg if isinstance(record.msg, str) else str(record.msg)
-        if self._token in msg:
-            record.msg = msg.replace(self._token, self._replacement)
-        if record.args:
-            if isinstance(record.args, dict):
-                # dict-style (mapping) args must stay a dict for % formatting.
-                record.args = {k: self._mask(v) for k, v in record.args.items()}
-            else:
-                record.args = tuple(self._mask(a) for a in record.args)
-        return True
-
-
-NUM_WORKERS = int(os.getenv("BOT_WORKERS", "1"))
-CONCURRENT_UPDATES = int(os.getenv("CONCURRENT_UPDATES", "1"))
-
-
 async def post_init(application: Application) -> None:
-    pool = WorkerPool(num_workers=NUM_WORKERS)
+    pool = WorkerPool(num_workers=BOT_WORKERS)
     await pool.start()
     handlers.worker_pool = pool
     logger.info(
         "Worker pool assigned (workers=%d, concurrent_updates=%d)",
-        NUM_WORKERS,
+        BOT_WORKERS,
         CONCURRENT_UPDATES,
     )
 
@@ -160,6 +142,7 @@ async def post_stop(application: Application) -> None:
 
 def main() -> None:
     _acquire_lock()
+    TMP_DIR.mkdir(parents=True, exist_ok=True)
 
     if not TELEGRAM_BOT_TOKEN or TELEGRAM_BOT_TOKEN == "your_token_here":
         logger.error("TELEGRAM_BOT_TOKEN is not set! Copy .env.example to .env.")
@@ -196,7 +179,7 @@ def main() -> None:
 
     logger.info(
         "Starting bot polling (workers=%d, concurrent=%d)...",
-        NUM_WORKERS,
+        BOT_WORKERS,
         CONCURRENT_UPDATES,
     )
     app.run_polling(allowed_updates=Update.ALL_TYPES)
