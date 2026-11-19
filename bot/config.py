@@ -1,3 +1,4 @@
+import logging
 from os import getenv
 from pathlib import Path
 
@@ -31,9 +32,29 @@ WHISPER_API_KEY = get("WHISPER_API_KEY", "")
 WHISPER_MODEL = get("WHISPER_MODEL", "whisper-large-v3-turbo")
 # Empty means auto-detect; set e.g. "zh" to force a language.
 WHISPER_LANGUAGE = get("WHISPER_LANGUAGE", "zh")
-ALLOWED_USER_IDS: list[int] = [
-    int(x.strip()) for x in get("ALLOWED_USER_IDS", "").split(",") if x.strip()
-]
+
+
+def _parse_user_ids(raw: str) -> list[int]:
+    """Parse a comma-separated list of Telegram user IDs.
+
+    Non-numeric entries are skipped instead of crashing the bot at import time;
+    a skipped entry can only reduce access (default-deny stays intact).
+    """
+    ids: list[int] = []
+    for part in raw.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            ids.append(int(part))
+        except ValueError:
+            logging.getLogger(__name__).warning(
+                "Ignoring invalid ALLOWED_USER_IDS entry: %r", part
+            )
+    return ids
+
+
+ALLOWED_USER_IDS: list[int] = _parse_user_ids(get("ALLOWED_USER_IDS", ""))
 
 # Resource guards (tuned for a 1 vCPU / 1.4 GiB host)
 MAX_VOICE_BYTES = get_int("MAX_VOICE_BYTES", 10 * 1024 * 1024)
