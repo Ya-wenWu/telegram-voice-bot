@@ -1,18 +1,19 @@
 # telegram-voice-bot
 
-A low-resource Telegram voice bot (1 vCPU / 1.4 GiB host) with text chat, remote
-Whisper transcription, edge-TTS replies, and daily quota enforcement via Redis.
+A low-resource Telegram voice bot with text chat, remote speech-to-text
+transcription, TTS replies, and daily quota enforcement via Redis.
 
 ## Features
 
-- **Text chat** — replies via OpenCode Zen (DeepSeek) LLM API
-- **Voice messages** — transcribed via Groq `whisper-large-v3-turbo`, then LLM
-  response is synthesized with edge-tts and sent back as MP3 audio
+- **Text chat** — replies via an OpenAI-compatible LLM endpoint
+- **Voice messages** — transcribed via a configurable Whisper-compatible STT endpoint,
+  then the LLM response is synthesized with an async TTS engine (voice selectable
+  via `TTS_VOICE`) and sent back as MP3 audio
 - **Short sentences spoken** — replies such as "好。" are not dropped by TTS
 - **Daily quotas** — Redis Lua atomic counter with TTL, fail-open, `Asia/Taipei` timezone
 - **Single-worker mode** — `BOT_WORKERS=1`, `CONCURRENT_UPDATES=1` for low-memory hosts
 - **Voice file cap** — `MAX_VOICE_BYTES=10 MB`, downloaded to disk temp dir (not `BytesIO`)
-- **TTS concurrency cap** — max 3 simultaneous edge-tts requests
+- **TTS concurrency cap** — max 3 simultaneous TTS requests
 - **ffmpeg concat** — re-encodes with `libmp3lame -q:a 4` for reliable MP3 output
 - **Retry/backoff** — 429/5xx retry with `Retry-After` honouring for LLM and transcription
 - **Generic user errors** — internal details never leaked to users
@@ -44,8 +45,8 @@ chmod 600 .env
 Edit `.env` with at minimum:
 - `TELEGRAM_BOT_TOKEN` — from @BotFather (required; the bot exits without it)
 - `ALLOWED_USER_IDS` — comma-separated Telegram user IDs (empty = deny all)
-- `ZEN_API_KEY` — OpenCode Zen API key (required; the bot exits without it)
-- `WHISPER_API_KEY` — Groq API key (or set `WHISPER_URL` for self-hosted);
+- `ZEN_API_KEY` — LLM API key (required; the bot exits without it)
+- `WHISPER_API_KEY` — STT API key (or set `WHISPER_URL` for self-hosted);
   without either, text chat works but voice transcription fails
 
 Redis is optional at runtime: if it is unreachable, quotas are simply not
@@ -63,15 +64,15 @@ Run:
 |----------|---------|-------------|
 | `TELEGRAM_BOT_TOKEN` | (required) | Telegram bot token |
 | `ALLOWED_USER_IDS` | (empty) | Comma-separated allowed user IDs; empty = deny all |
-| `ZEN_API_BASE` | `https://opencode.ai/inference/openai/v1` | LLM API base URL |
-| `ZEN_MODEL` | `deepseek-v4.1-flash-free` | LLM model name |
-| `ZEN_API_KEY` | (required) | Zen API key |
-| `WHISPER_API_BASE` | `https://api.groq.com/openai/v1` | Whisper API base URL |
-| `WHISPER_API_KEY` | (required) | Whisper API key (Groq) |
-| `WHISPER_MODEL` | `whisper-large-v3-turbo` | Whisper model |
-| `WHISPER_LANGUAGE` | `zh` | Transcription language hint |
-| `WHISPER_URL` | (empty) | Self-hosted Whisper URL (overrides Groq) |
-| `TTS_VOICE` | `zh-CN-XiaoxiaoNeural` | edge-tts voice for spoken replies |
+| `TTS_VOICE` | (see `bot/config.py`) | TTS voice ID |
+| `ZEN_API_BASE` | (see `bot/config.py`) | LLM API base URL |
+| `ZEN_MODEL` | (see `bot/config.py`) | LLM model name |
+| `ZEN_API_KEY` | (required) | LLM API key |
+| `WHISPER_API_BASE` | (see `bot/config.py`) | STT API base URL |
+| `WHISPER_API_KEY` | (required) | STT API key |
+| `WHISPER_MODEL` | (see `bot/config.py`) | STT model |
+| `WHISPER_LANGUAGE` | (see `bot/config.py`) | Transcription language hint |
+| `WHISPER_URL` | (empty) | Self-hosted STT URL (overrides the remote endpoint) |
 | `REDIS_URL` | `redis://127.0.0.1:6379/0` | Redis for daily quotas |
 | `DAILY_REQUEST_LIMIT` | `50` | Requests per user per day |
 | `TIMEZONE` | `Asia/Taipei` | Timezone for daily quota reset |
@@ -101,10 +102,10 @@ bot/worker.py
 bot/opencode_client.py
   ├── chat()         — non-streaming LLM with retry
   ├── chat_stream()  — SSE streaming, propagates transport errors
-  └── tts()          — edge-tts synthesis
+  └── tts()          — TTS synthesis
 
 bot/whisper.py
-  └── transcribe()   — Groq Whisper with file streaming + retry
+  └── transcribe()   — Whisper-compatible STT with file streaming + retry
 
 bot/redis_client.py
   └── check_daily_quota() — Lua INCR + EXPIRE, fail-open
@@ -116,7 +117,7 @@ bot/retry.py
 ## Security
 
 - `.env` is never committed; keep permissions `600`
-- API keys are redacted from logs via `TokenFilter`
+- API keys are redacted from logs via `TokenRedactingFormatter`
 - Allowlist defaults to deny-all
 - Voice files capped at 10 MB to prevent abuse
 - Redis quota failures fail-open (bot stays up, but no quota enforcement during outage)
@@ -144,6 +145,14 @@ For production on a 1 vCPU / 1.4 GiB host, consider:
 - `systemd --user` unit with `MemoryMax=700M`
 - Log rotation via `logrotate`
 - Redis with memory limit (64 MB recommended)
+
+## Pending Changes
+
+- `.github/workflows/ai-code-review.yml` hardcodes the AI review model ID.
+  Once the `OPENCODE_REVIEW_MODEL` repository variable exists
+  (**Settings → Secrets and variables → Actions → Variables**), switch the
+  workflow to `${{ vars.OPENCODE_REVIEW_MODEL }}` so no model ID is hardcoded
+  in the AI-review workflow or its documentation.
 
 ## License
 
