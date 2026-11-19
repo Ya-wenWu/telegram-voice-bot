@@ -8,7 +8,14 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters
 
 from bot import handlers
-from bot.config import TELEGRAM_BOT_TOKEN, TMP_DIR, WHISPER_API_KEY, ZEN_API_KEY
+from bot.config import (
+    ALLOWED_USER_IDS,
+    TELEGRAM_BOT_TOKEN,
+    TMP_DIR,
+    WHISPER_API_KEY,
+    WHISPER_URL,
+    ZEN_API_KEY,
+)
 from bot.handlers import handle_text, handle_voice, start
 from bot.http_client import close_client
 from bot.redis_client import close_redis
@@ -155,9 +162,25 @@ def main() -> None:
     _acquire_lock()
 
     if not TELEGRAM_BOT_TOKEN or TELEGRAM_BOT_TOKEN == "your_token_here":
-        logger.error("TELEGRAM_BOT_TOKEN is not set!")
+        logger.error("TELEGRAM_BOT_TOKEN is not set! Copy .env.example to .env.")
         _release_lock()
         sys.exit(1)
+
+    if not ZEN_API_KEY:
+        logger.error("ZEN_API_KEY is not set; the bot cannot generate replies.")
+        _release_lock()
+        sys.exit(1)
+
+    if not ALLOWED_USER_IDS:
+        logger.warning(
+            "ALLOWED_USER_IDS is empty: every user will be rejected. "
+            "Set it to your Telegram user ID(s) in .env."
+        )
+    if not WHISPER_URL and not WHISPER_API_KEY:
+        logger.warning(
+            "Neither WHISPER_API_KEY nor WHISPER_URL is set: voice messages "
+            "will fail to transcribe (text chat still works)."
+        )
 
     app = (
         Application.builder()

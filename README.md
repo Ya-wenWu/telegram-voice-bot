@@ -42,10 +42,14 @@ chmod 600 .env
 ```
 
 Edit `.env` with at minimum:
-- `TELEGRAM_BOT_TOKEN` — from @BotFather
+- `TELEGRAM_BOT_TOKEN` — from @BotFather (required; the bot exits without it)
 - `ALLOWED_USER_IDS` — comma-separated Telegram user IDs (empty = deny all)
-- `ZEN_API_KEY` — OpenCode Zen API key
-- `WHISPER_API_KEY` — Groq API key (or set `WHISPER_URL` for self-hosted)
+- `ZEN_API_KEY` — OpenCode Zen API key (required; the bot exits without it)
+- `WHISPER_API_KEY` — Groq API key (or set `WHISPER_URL` for self-hosted);
+  without either, text chat works but voice transcription fails
+
+Redis is optional at runtime: if it is unreachable, quotas are simply not
+enforced (fail-open).
 
 Run:
 
@@ -67,6 +71,7 @@ Run:
 | `WHISPER_MODEL` | `whisper-large-v3-turbo` | Whisper model |
 | `WHISPER_LANGUAGE` | `zh` | Transcription language hint |
 | `WHISPER_URL` | (empty) | Self-hosted Whisper URL (overrides Groq) |
+| `TTS_VOICE` | `zh-CN-XiaoxiaoNeural` | edge-tts voice for spoken replies |
 | `REDIS_URL` | `redis://127.0.0.1:6379/0` | Redis for daily quotas |
 | `DAILY_REQUEST_LIMIT` | `50` | Requests per user per day |
 | `TIMEZONE` | `Asia/Taipei` | Timezone for daily quota reset |
@@ -119,8 +124,11 @@ bot/retry.py
 ## Development
 
 ```bash
-# Run tests
+# Install dev tools (pytest, ruff, mypy)
 source .venv/bin/activate
+pip install -r requirements-dev.txt
+
+# Run tests
 pytest
 
 # Lint
