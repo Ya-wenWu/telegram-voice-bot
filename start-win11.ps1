@@ -4,6 +4,9 @@ Write-Host "=== Web Voice Bot (Windows 11) 啟動檢查 ===" -ForegroundColor Cy
 if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
     Write-Error "找不到 node，請先安裝 Node.js 20+ (https://nodejs.org/)"
 }
+if (-not (Get-Command python -ErrorAction SilentlyContinue)) {
+    Write-Error "找不到 python，請先安裝 Python 3.11+ 並勾選 Add python.exe to PATH"
+}
 if (-not (Get-Command ffmpeg -ErrorAction SilentlyContinue)) {
     Write-Warning "找不到 ffmpeg！請先執行: winget install Gyan.FFmpeg 並重開終端機，否則語音錄音與 MP3 合併會失敗。"
 }
@@ -23,7 +26,7 @@ if (-not (Test-Path $venvPy)) {
 
 if (-not (Test-Path ".env")) {
     Copy-Item ".env.example" ".env"
-    Write-Warning "已建立 .env 檔案！請先在 .env 填入你的 GEMINI_API_KEY 後再重新執行本腳本。"
+    Write-Warning "已建立 .env 檔案！請先在 .env 填入你的 GEMINI_API_KEY 後存檔，再重新執行本腳本。"
     notepad .env
     exit 1
 }

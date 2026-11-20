@@ -163,10 +163,15 @@ class TestRedactDiff:
     @pytest.fixture()
     def code_review_module(self):
         import importlib.util
+        from pathlib import Path
 
-        spec = importlib.util.spec_from_file_location(
-            "code_review", ".github/scripts/code_review.py"
-        )
+        here = Path(__file__).resolve()
+        script_path = here.parents[1] / ".github" / "scripts" / "code_review.py"
+        if not script_path.is_file():
+            script_path = here.parents[2] / ".github" / "scripts" / "code_review.py"
+
+        spec = importlib.util.spec_from_file_location("code_review", script_path)
+        assert spec is not None and spec.loader is not None
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
         return mod

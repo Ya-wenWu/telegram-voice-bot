@@ -42,8 +42,8 @@ const DELIVERABLES: DeliverableFile[] = [
     url: '/telegram-voice-bot-fixes.patch',
     mimeType: 'text/plain',
     description:
-      'Git format-patch with all 3 commits (f847d91 + 2688dd1 + c1a5e35) implementing Issue #24/#25/#26/#27 specs, ready for `git am`.',
-    sizeLabel: '104 KB',
+      'Git format-patch with all commits (Issue #24-#27 specs + Windows 11 compatibility + security hardening), ready for `git am`.',
+    sizeLabel: '109 KB',
   },
   {
     id: 'zip',
@@ -51,12 +51,12 @@ const DELIVERABLES: DeliverableFile[] = [
     url: '/telegram-voice-bot-fixed.zip',
     mimeType: 'application/zip',
     description:
-      'Python telegram-voice-bot repository source code only (including Issue #24/#25/#26/#27 implementations, 136 passing tests, and refreshed docs).',
-    sizeLabel: '59 KB',
+      'Python telegram-voice-bot repository core only (Windows 11 + Linux compatible, 136 passing tests, refreshed docs).',
+    sizeLabel: '60 KB',
   },
 ];
 
-const DEFAULT_RECIPIENT = 'sandy50422@gmail.com';
+const DEFAULT_RECIPIENT = (import.meta.env.VITE_DEFAULT_RECIPIENT_EMAIL ?? '').trim();
 const DEFAULT_SUBJECT =
   '[telegram-voice-bot] Issue #24-#27 specs, runtime hardening & git patch (fix/runtime-hardening-and-docs)';
 const DEFAULT_BODY = `Hi,

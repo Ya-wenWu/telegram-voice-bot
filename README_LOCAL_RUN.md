@@ -1,76 +1,51 @@
-# Web Voice Bot — 完整本地執行專案（支援 Windows 11 / macOS / Linux）
+# Web Voice Bot — Windows 11 / Linux 雙平台完整專案
 
-本壓縮檔已將目前線上運行的完整前後端專案與強化後的 `telegram-voice-bot` 核心全部整合在單一資料夾 `web-voice-bot-complete/` 中，並已完成 **Windows 11 專屬相容性修復**（`fcntl` / `msvcrt` 鎖定、UTF-8 管線編碼、`ffmpeg` Windows 路徑正規化、`python -m ruff`）。
+本專案整合 React + Express 前端與強化版 Python `telegram-voice-bot` 核心，**同一套程式碼同時支援 Windows 11 與 Linux**，且已移除所有個人信箱與本地 Firebase 金鑰設定，可直接推上 GitHub（`.github/workflows/ci.yml` 路徑已同步修正）。
 
 ---
 
-## 資料夾結構說明（請勿將根目錄檔案塞進 `telegram-voice-bot/` 裡面）
+## 資料夾結構
 
-```
+```text
 web-voice-bot-complete/
-├── package.json            # Node.js / Vite / Express 依賴設定
-├── server.ts               # Express + Gemini STT/AI + ffmpeg 音訊正規化伺服器
-├── bot_bridge.py           # 連接 Python 核心的橋接程式
-├── .env.example            # 環境變數範本（複製為 .env 並填入 GEMINI_API_KEY）
-├── start-win11.ps1         # Windows 11 一鍵檢查與啟動腳本
-├── index.html              # 前端入口
-├── src/                    # React + Tailwind 前端網頁（Web Voice Bot 介面）
-└── telegram-voice-bot/     # Python 語音機器人核心（ConversationStore / Edge-TTS / pytest）
+├── .github/                # GitHub Actions CI（已指向 telegram-voice-bot/）
+├── package.json            # Node.js / Vite / Express（跨平台 clean 指令）
+├── server.ts               # Express + Gemini STT/AI + ffmpeg（支援 .env 自訂 GEMINI_MODEL）
+├── bot_bridge.py           # 跨平台 Python 核心橋接（UTF-8 / Windows+Linux）
+├── .env.example            # 環境變數範本（零真實金鑰）
+├── start-win11.ps1         # Windows 11 一鍵啟動腳本
+├── start-linux.sh          # Linux / macOS 一鍵啟動腳本
+├── src/                    # Web Voice Bot 網頁前端（內建 Windows / Linux 執行環境切換）
+└── telegram-voice-bot/     # Python 核心與 136 項自動化測試
 ```
-
-> ⚠️ **注意**：如果你先前把檔案直接覆蓋進舊的 `telegram-voice-bot` 資料夾，建議改將此 ZIP **解壓縮到一個乾淨的新資料夾**（例如 `C:\Projects\web-voice-bot-complete`），並在 `web-voice-bot-complete` **最外層** 執行以下指令。
 
 ---
 
-## Windows 11 快速啟動步驟（PowerShell）
+## 方式 A：Windows 11 執行步驟（PowerShell）
 
-### 1. 事前準備（確認已安裝）
-- **Node.js 20+**（`node -v`）
-- **Python 3.11+**（`python --version`）
-- **ffmpeg**（語音錄音轉檔與多句 MP3 拼接必備）：
-  ```powershell
-  winget install Gyan.FFmpeg
-  ```
-  > 安裝完 `ffmpeg` 後，請**重新開啟一個新的 PowerShell 視窗**，確認 `ffmpeg -version` 有輸出。
-
-### 2. 安裝前端與後端依賴（在 `web-voice-bot-complete` 根目錄執行）
-```powershell
-# 1) 安裝 Node.js 套件
-npm install
-
-# 2) 建立 Python 虛擬環境並安裝核心與測試套件
-python -m venv telegram-voice-bot\.venv
-.\telegram-voice-bot\.venv\Scripts\python.exe -m pip install --upgrade pip
-.\telegram-voice-bot\.venv\Scripts\python.exe -m pip install -r telegram-voice-bot\requirements-dev.txt
-```
-
-### 3. 設定 Gemini API 金鑰
-```powershell
-Copy-Item .env.example .env
-notepad .env
-```
-將 `.env` 裡的 `GEMINI_API_KEY` 改為你的 Google AI Studio API Key（免費申請：https://aistudio.google.com/apikey ）並存檔。
-
-### 4. 啟動 Web Voice Bot
-```powershell
-npm run dev
-```
-（或直接執行內附腳本：`powershell -ExecutionPolicy Bypass -File .\start-win11.ps1`）
-
-啟動成功後，在 Chrome / Edge 瀏覽器開啟：
-👉 **http://localhost:3000**
-
-> ℹ️ `localhost` 屬於瀏覽器安全來源（Secure Context），Chrome / Edge 會直接開放麥克風錄音權限。
+1. 安裝必備工具：Node.js 20+、Python 3.11+（勾選 Add to PATH），以及 ffmpeg：
+   ```powershell
+   winget install Gyan.FFmpeg
+   ```
+   （安裝後請重開一個新的 PowerShell 視窗）
+2. 進到解壓縮後的 `web-voice-bot-complete` 資料夾，執行一鍵啟動腳本：
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File .\start-win11.ps1
+   ```
+3. 首次執行會自動建立 `.env` 並開啟記事本，填入你的 `GEMINI_API_KEY` 存檔後再跑一次即可。
+4. 瀏覽器開啟 **http://localhost:3000**。
 
 ---
 
-## macOS / Linux 快速啟動步驟
+## 方式 B：Linux 執行步驟（Bash）
 
-```bash
-npm install
-python3 -m venv telegram-voice-bot/.venv
-telegram-voice-bot/.venv/bin/pip install -r telegram-voice-bot/requirements-dev.txt
-cp .env.example .env   # 填入 GEMINI_API_KEY
-npm run dev
-```
-瀏覽器開啟 `http://localhost:3000`。
+1. 安裝必備工具（Ubuntu / Debian 範例）：
+   ```bash
+   sudo apt update && sudo apt install -y ffmpeg python3-venv
+   ```
+2. 進到解壓縮後的 `web-voice-bot-complete` 資料夾，執行一鍵啟動腳本：
+   ```bash
+   chmod +x ./start-linux.sh && ./start-linux.sh
+   ```
+3. 首次執行會自動建立 `.env`，編輯填入 `GEMINI_API_KEY` 後再執行 `./start-linux.sh`。
+4. 本機瀏覽器開啟 **http://localhost:3000**（若部署於遠端 Linux IP，請掛載 HTTPS 以啟用麥克風權限）。

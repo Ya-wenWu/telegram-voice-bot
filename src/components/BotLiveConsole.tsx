@@ -8,11 +8,13 @@ import {
   ExternalLink,
   Loader2,
   Mic,
+  Monitor,
   Play,
   RefreshCw,
   RotateCcw,
   Save,
   Send,
+  Server,
   SlidersHorizontal,
   Square,
   Terminal,
@@ -36,7 +38,10 @@ interface BotConfig {
   ZEN_MAX_TOKENS: number;
 }
 
+type RuntimeOs = 'windows' | 'linux';
+
 interface BotStatus {
+  hostOs?: RuntimeOs;
   pythonVersion: string;
   ffmpegAvailable: boolean;
   ffprobeAvailable: boolean;
@@ -172,6 +177,71 @@ const VOICE_OPTIONS = [
   'en-US-JennyNeural',
 ];
 
+const OS_STORAGE_KEY = 'web_voice_bot_target_os_v1';
+
+interface RuntimeGuide {
+  label: string;
+  shortLabel: string;
+  shellName: string;
+  scriptName: string;
+  prereqNote: string;
+  prereqCmd: string;
+  quickStartCmd: string;
+  manualCmds: string;
+  venvPythonPath: string;
+  micNote: string;
+}
+
+const RUNTIME_GUIDES: Record<RuntimeOs, RuntimeGuide> = {
+  windows: {
+    label: 'Windows 11',
+    shortLabel: 'Windows',
+    shellName: 'PowerShell',
+    scriptName: 'start-win11.ps1',
+    prereqNote: '需先安裝 Node.js 20+、Python 3.11+（勾選 Add to PATH）與 ffmpeg（裝完請重開終端機）：',
+    prereqCmd: 'winget install Gyan.FFmpeg',
+    quickStartCmd: 'powershell -ExecutionPolicy Bypass -File .\\start-win11.ps1',
+    manualCmds: [
+      'npm install',
+      'python -m venv telegram-voice-bot\\.venv',
+      '.\\telegram-voice-bot\\.venv\\Scripts\\python.exe -m pip install -r telegram-voice-bot\\requirements-dev.txt',
+      'Copy-Item .env.example .env   # 填入 GEMINI_API_KEY',
+      'npm run dev',
+    ].join('\n'),
+    venvPythonPath: 'telegram-voice-bot\\.venv\\Scripts\\python.exe',
+    micNote: '在 Chrome / Edge 開啟 http://localhost:3000 即可直接授權筆電麥克風錄音（程式已自動使用 msvcrt 鎖定與 UTF-8 編碼）。',
+  },
+  linux: {
+    label: 'Linux',
+    shortLabel: 'Linux',
+    shellName: 'Bash',
+    scriptName: 'start-linux.sh',
+    prereqNote: 'Ubuntu / Debian 需先安裝 Node.js 20+、Python 3.11+、python3-venv 與 ffmpeg：',
+    prereqCmd: 'sudo apt update && sudo apt install -y ffmpeg python3-venv',
+    quickStartCmd: 'chmod +x ./start-linux.sh && ./start-linux.sh',
+    manualCmds: [
+      'npm install',
+      'python3 -m venv telegram-voice-bot/.venv',
+      'telegram-voice-bot/.venv/bin/pip install -r telegram-voice-bot/requirements-dev.txt',
+      'cp .env.example .env   # 編輯填入 GEMINI_API_KEY',
+      'npm run dev',
+    ].join('\n'),
+    venvPythonPath: 'telegram-voice-bot/.venv/bin/python',
+    micNote: '本機瀏覽器開啟 http://localhost:3000 可直接錄音；若部署在遠端 Linux IP，請掛載 HTTPS（Nginx / Caddy / Cloudflare Tunnel）以符合瀏覽器麥克風安全規範。',
+  },
+};
+
+function detectDefaultOs(): RuntimeOs {
+  try {
+    const saved = window.localStorage.getItem(OS_STORAGE_KEY);
+    if (saved === 'windows' || saved === 'linux') return saved;
+  } catch {
+    // ignore storage errors
+  }
+  const ua = typeof navigator !== 'undefined' ? navigator.userAgent.toLowerCase() : '';
+  return ua.includes('win') ? 'windows' : 'linux';
+}
+
 function formatKb(bytes: number): string {
   if (!bytes) return '0 B';
   if (bytes < 1024) return `${bytes} B`;
@@ -217,7 +287,10 @@ export function BotLiveConsole() {
     transcript: string;
   } | null>(null);
 
-  const [rightTab, setRightTab] = useState<'config' | 'logs' | 'tests'>('config');
+  const [rightTab, setRightTab] = useState<'env' | 'config' | 'logs' | 'tests'>('env');
+  const [targetOs, setTargetOs] = useState<RuntimeOs>(() => detectDefaultOs());
+  const [copiedCommands, setCopiedCommands] = useState(false);
+  const [downloadingLauncher, setDownloadingLauncher] = useState(false);
   const [savingConfig, setSavingConfig] = useState(false);
   const [configSavedNotice, setConfigSavedNotice] = useState<string | null>(null);
   const [downloadingZip, setDownloadingZip] = useState(false);
@@ -858,6 +931,55 @@ export function BotLiveConsole() {
     }
   };
 
+  const handleSelectTargetOs = (osChoice: RuntimeOs) => {
+    setTargetOs(osChoice);
+    setCopiedCommands(false);
+    try {
+      window.localStorage.setItem(OS_STORAGE_KEY, osChoice);
+    } catch {
+      // ignore storage errors
+    }
+  };
+
+  const handleCopyOsCommands = async () => {
+    const guide = RUNTIME_GUIDES[targetOs];
+    const text = `# ${guide.label} (${guide.shellName})\n# 1. 安裝系統依賴\n${guide.prereqCmd}\n\n# 2. 一鍵啟動（解壓縮進 web-voice-bot-complete 後執行）\n${guide.quickStartCmd}\n\n# 或手動步驟：\n${guide.manualCmds}`;
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedCommands(true);
+      window.setTimeout(() => setCopiedCommands(false), 2500);
+    } catch {
+      setStatusError('無法自動複製指令，請直接選取下方程式碼區塊複製。');
+    }
+  };
+
+  const handleDownloadLauncherScript = async () => {
+    if (downloadingLauncher) return;
+    setDownloadingLauncher(true);
+    setStatusError(null);
+    const guide = RUNTIME_GUIDES[targetOs];
+    try {
+      const res = await fetch(`/api/download/launcher/${targetOs}`, { cache: 'no-store' });
+      if (!res.ok) {
+        throw new Error(`無法下載 ${guide.scriptName}（HTTP ${res.status}）`);
+      }
+      const blob = await res.blob();
+      const blobUrl = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = blobUrl;
+      anchor.download = guide.scriptName;
+      anchor.style.display = 'none';
+      document.body.appendChild(anchor);
+      anchor.click();
+      document.body.removeChild(anchor);
+      window.setTimeout(() => URL.revokeObjectURL(blobUrl), 8000);
+    } catch (err) {
+      setStatusError(err instanceof Error ? err.message : '下載啟動腳本失敗。');
+    } finally {
+      setDownloadingLauncher(false);
+    }
+  };
+
   const handleCopyDownloadUrl = async (url: string) => {
     try {
       await navigator.clipboard.writeText(url);
@@ -867,6 +989,8 @@ export function BotLiveConsole() {
       setStatusError(`無法自動複製，請手動複製此網址下載：${url}`);
     }
   };
+
+  const activeGuide = RUNTIME_GUIDES[targetOs];
 
   return (
     <div className="space-y-6">
@@ -878,12 +1002,52 @@ export function BotLiveConsole() {
               Web Voice Bot
             </h1>
             <p className="mt-1 text-sm text-slate-600">
-              免 Telegram 與 BotFather Token——直接在網頁中使用我們開發的 Python 語音機器人核心（麥克風語音辨識、多輪對話記憶、Edge-TTS 語音合成與{' '}
+              免 Telegram 與 BotFather Token——支援 Windows 11 與 Linux 雙平台，直接在網頁使用 Python 語音核心（麥克風辨識、多輪記憶、Edge-TTS 與{' '}
               <code className="text-xs">ffmpeg -threads 1</code>）。
             </p>
           </div>
 
           <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+            {/* Target OS Selector: Windows vs Linux */}
+            <div
+              role="group"
+              aria-label="選擇執行環境"
+              className="inline-flex items-center p-0.5 bg-slate-100 border border-slate-200 rounded-lg shrink-0"
+            >
+              <button
+                type="button"
+                onClick={() => {
+                  handleSelectTargetOs('windows');
+                  setRightTab('env');
+                }}
+                aria-pressed={targetOs === 'windows'}
+                className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-md transition-colors whitespace-nowrap cursor-pointer ${
+                  targetOs === 'windows'
+                    ? 'bg-white text-slate-900 shadow-xs'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                <Monitor className="w-3.5 h-3.5" aria-hidden="true" />
+                <span>Windows 11</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  handleSelectTargetOs('linux');
+                  setRightTab('env');
+                }}
+                aria-pressed={targetOs === 'linux'}
+                className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-md transition-colors whitespace-nowrap cursor-pointer ${
+                  targetOs === 'linux'
+                    ? 'bg-white text-slate-900 shadow-xs'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                <Server className="w-3.5 h-3.5" aria-hidden="true" />
+                <span>Linux</span>
+              </button>
+            </div>
+
             <button
               type="button"
               onClick={() => void handleDownloadCompleteZip()}
@@ -930,11 +1094,15 @@ export function BotLiveConsole() {
         {/* Unboxed tabular runtime summary */}
         {status && (
           <div className="mt-4 pt-4 border-t border-slate-100 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-xs text-slate-600 font-mono tabular-nums">
-            <span>Python {status.pythonVersion}</span>
+            <span>Host {status.hostOs === 'windows' ? 'Windows' : 'Linux'}</span>
             <span aria-hidden="true" className="text-slate-300">
               ·
             </span>
-            <span>Branch {status.gitBranch} ({status.gitCommit})</span>
+            <span>Target {activeGuide.label}</span>
+            <span aria-hidden="true" className="text-slate-300">
+              ·
+            </span>
+            <span>Python {status.pythonVersion}</span>
             <span aria-hidden="true" className="text-slate-300">
               ·
             </span>
@@ -1464,13 +1632,27 @@ export function BotLiveConsole() {
             <div className="inline-flex items-center gap-1 p-1 bg-slate-100 rounded-lg">
               <button
                 type="button"
+                onClick={() => setRightTab('env')}
+                className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md transition-colors whitespace-nowrap cursor-pointer ${
+                  rightTab === 'env' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600'
+                }`}
+              >
+                {targetOs === 'windows' ? (
+                  <Monitor className="w-3.5 h-3.5" aria-hidden="true" />
+                ) : (
+                  <Server className="w-3.5 h-3.5" aria-hidden="true" />
+                )}
+                <span>執行環境</span>
+              </button>
+              <button
+                type="button"
                 onClick={() => setRightTab('config')}
                 className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md transition-colors whitespace-nowrap cursor-pointer ${
                   rightTab === 'config' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600'
                 }`}
               >
                 <SlidersHorizontal className="w-3.5 h-3.5" aria-hidden="true" />
-                <span>Dynamic Config</span>
+                <span>Config</span>
               </button>
               <button
                 type="button"
@@ -1494,6 +1676,115 @@ export function BotLiveConsole() {
               </button>
             </div>
           </div>
+
+          {rightTab === 'env' && (
+            <div className="p-5 space-y-4">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <h3 className="text-sm font-semibold text-slate-900">
+                    選擇你的本機執行環境
+                  </h3>
+                  <p className="text-xs text-slate-500 mt-0.5">
+                    同一套專案同時支援 Windows 11 與 Linux，切換後立即顯示對應指令與啟動腳本。
+                  </p>
+                </div>
+                <div className="inline-flex items-center p-0.5 bg-slate-100 border border-slate-200 rounded-lg">
+                  <button
+                    type="button"
+                    onClick={() => handleSelectTargetOs('windows')}
+                    className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-md transition-colors cursor-pointer ${
+                      targetOs === 'windows'
+                        ? 'bg-white text-slate-900 shadow-xs'
+                        : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    <Monitor className="w-3.5 h-3.5" aria-hidden="true" />
+                    <span>Windows 11</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleSelectTargetOs('linux')}
+                    className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-md transition-colors cursor-pointer ${
+                      targetOs === 'linux'
+                        ? 'bg-white text-slate-900 shadow-xs'
+                        : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    <Server className="w-3.5 h-3.5" aria-hidden="true" />
+                    <span>Linux</span>
+                  </button>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2.5 text-xs">
+                <div className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-md">
+                  <div className="text-slate-500">目前選擇環境</div>
+                  <div className="font-mono font-semibold text-slate-900 mt-0.5">
+                    {activeGuide.label} ({activeGuide.shellName})
+                  </div>
+                </div>
+                <div className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-md">
+                  <div className="text-slate-500">Python 虛擬環境路徑</div>
+                  <div className="font-mono font-semibold text-slate-900 mt-0.5 truncate" title={activeGuide.venvPythonPath}>
+                    {activeGuide.venvPythonPath}
+                  </div>
+                </div>
+              </div>
+
+              <div className="space-y-1.5">
+                <div className="text-xs font-medium text-slate-700">1. 系統依賴（{activeGuide.label}）</div>
+                <p className="text-xs text-slate-500">{activeGuide.prereqNote}</p>
+                <pre className="p-2.5 bg-slate-900 text-slate-100 rounded-md text-xs font-mono overflow-x-auto">
+                  {activeGuide.prereqCmd}
+                </pre>
+              </div>
+
+              <div className="space-y-1.5">
+                <div className="text-xs font-medium text-slate-700">
+                  2. 一鍵啟動（{activeGuide.scriptName}）
+                </div>
+                <pre className="p-2.5 bg-slate-900 text-emerald-300 rounded-md text-xs font-mono overflow-x-auto">
+                  {activeGuide.quickStartCmd}
+                </pre>
+              </div>
+
+              <div className="space-y-1.5">
+                <div className="text-xs font-medium text-slate-700">或手動逐步執行</div>
+                <pre className="p-2.5 bg-slate-50 border border-slate-200 text-slate-800 rounded-md text-xs font-mono overflow-x-auto leading-relaxed">
+                  {activeGuide.manualCmds}
+                </pre>
+              </div>
+
+              <p className="text-xs text-slate-600 bg-blue-50/70 border border-blue-200/80 rounded-md px-3 py-2">
+                {activeGuide.micNote}
+              </p>
+
+              <div className="flex flex-wrap items-center gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={() => void handleCopyOsCommands()}
+                  className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors whitespace-nowrap cursor-pointer"
+                >
+                  {copiedCommands ? (
+                    <Check className="w-3.5 h-3.5" aria-hidden="true" />
+                  ) : (
+                    <Copy className="w-3.5 h-3.5" aria-hidden="true" />
+                  )}
+                  <span>{copiedCommands ? '已複製指令' : `複製 ${activeGuide.shortLabel} 指令`}</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => void handleDownloadLauncherScript()}
+                  disabled={downloadingLauncher}
+                  className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-medium text-slate-700 bg-white border border-slate-300 hover:bg-slate-50 disabled:opacity-60 rounded-lg transition-colors whitespace-nowrap cursor-pointer"
+                >
+                  <Download className="w-3.5 h-3.5 text-slate-500" aria-hidden="true" />
+                  <span>下載 {activeGuide.scriptName}</span>
+                </button>
+              </div>
+            </div>
+          )}
 
           {rightTab === 'config' && configForm && (
             <form onSubmit={handleSaveConfig} className="p-5 space-y-4">
