@@ -510,7 +510,7 @@ async def cmd_finalize(payload: dict) -> dict:
 
     if stt_ms > 0:
         log.info("Voice STT transcription completed in %.1fms (%d chars)", stt_ms, len(text))
-    log.info("LLM reply generated in %.1fms (session token=%s)", llm_ms, demo_secret)
+    log.info("LLM reply generated in %.1fms (session token redacted)", llm_ms)
 
     # Save turn via real ConversationStore (Issue #26)
     store = load_store_for_chat(state, chat_id)
