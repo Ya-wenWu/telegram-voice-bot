@@ -37,6 +37,7 @@ TTS_CONCURRENCY = 3
 # Keep synthesized audio bounded; 16k characters would be hours of speech.
 TTS_MAX_CHARS = 1500
 TTS_MAX_SENTENCES = 40
+FFMPEG_KILL_WAIT_SEC = 5.0
 
 # Chinese + English sentence endings
 _SENTENCE_ENDS = frozenset("。！？；.!?\n")
@@ -75,26 +76,28 @@ def _scan_sentences(
     text: str,
     pos: int,
     min_len: int = 1,
+    scan_from: int | None = None,
 ) -> tuple[int, list[str]]:
-    """Scan *text* from character position *pos* forward for complete sentences."""
+    """Scan *text* from character position *pos* forward for complete sentences.
+
+    Returns ``(new_pos, sentences)`` using *scan_from* so unpunctuated prefixes
+    are inspected only once (O(n) total instead of O(n^2)).
+    """
     found: list[str] = []
-    while pos < len(text):
-        boundary = None
-        for i in range(pos, len(text)):
-            if text[i] in _SENTENCE_ENDS:
-                boundary = i
-                break
-        if boundary is None:
-            break
-        sentence = text[pos : boundary + 1].strip()
-        pos = boundary + 1
-        if len(sentence) >= min_len and _has_content(sentence):
-            found.append(sentence)
+    i = pos if scan_from is None else max(pos, scan_from)
+    n = len(text)
+    while i < n:
+        if text[i] in _SENTENCE_ENDS:
+            sentence = text[pos : i + 1].strip()
+            pos = i + 1
+            if len(sentence) >= min_len and _has_content(sentence):
+                found.append(sentence)
+        i += 1
     return pos, found
 
 
 def _split_sentences(text: str) -> list[str]:
-    """Split text into sentences at natural boundaries."""
+    """Split text into sentences at natural boundaries (kept for tests)."""
     if not text:
         return []
     sentences = []
@@ -239,7 +242,10 @@ async def _concat_mp3(
                     proc.kill()
                 except ProcessLookupError:
                     pass
-                await proc.wait()
+                try:
+                    await asyncio.wait_for(proc.wait(), timeout=FFMPEG_KILL_WAIT_SEC)
+                except TimeoutError:
+                    logger.error("ffmpeg subprocess did not exit after kill()")
             raise
 
         if ret == 0 and os.path.exists(out_path):
@@ -259,9 +265,12 @@ def _write_bytes(path: str, data: bytes) -> None:
 
 
 def _format_ffmpeg_concat_entry(path: str) -> str:
-    """Format a path for ffmpeg concat demuxer (POSIX slashes for Windows compatibility)."""
-    normalized = Path(path).as_posix().replace("\\", "/").replace("'", "'\\''")
-    return f"file '{normalized}'\n"
+    """Format a path safely for ffmpeg concat demuxer (POSIX slashes, backslash-escaped quotes)."""
+    posix_path = Path(path).as_posix()
+    if "\n" in posix_path or "\r" in posix_path:
+        raise ValueError("Invalid newline character in concat path")
+    escaped = posix_path.replace("\\", "\\\\").replace("'", "\\'")
+    return f"file '{escaped}'\n"
 
 
 def _write_text(path: str, data: str) -> None:
@@ -272,8 +281,6 @@ def _write_text(path: str, data: str) -> None:
 def _read_bytes(path: str) -> bytes:
     with open(path, "rb") as fh:
         return fh.read()
-
-
 class WorkerPool:
     def __init__(
         self,
@@ -288,6 +295,7 @@ class WorkerPool:
         self._num_workers = max(1, num_workers)
         self._workers: list[asyncio.Task] = []
         self._running = False
+        self._accepting = False
         self._tts_timeout = tts_timeout
         self._ffmpeg_timeout = ffmpeg_timeout
         self._memory = memory or ConversationStore(
@@ -311,6 +319,7 @@ class WorkerPool:
 
     async def start(self) -> None:
         self._running = True
+        self._accepting = True
         self._workers = [
             asyncio.create_task(self._run(i), name=f"worker-{i}")
             for i in range(self._num_workers)
@@ -322,7 +331,8 @@ class WorkerPool:
         )
 
     async def stop(self, drain_timeout: float = 0.0) -> None:
-        self._running = False
+        # Stop accepting new items first while workers stay alive to drain queued items.
+        self._accepting = False
         if drain_timeout > 0 and self._workers:
             try:
                 await asyncio.wait_for(self._queue.join(), timeout=drain_timeout)
@@ -331,20 +341,30 @@ class WorkerPool:
                     "Worker pool drain timed out after %.1fs; cancelling remaining tasks",
                     drain_timeout,
                 )
+        self._running = False
         for w in self._workers:
             w.cancel()
         if self._workers:
             await asyncio.gather(*self._workers, return_exceptions=True)
         logger.info("Worker pool stopped")
 
-    async def enqueue(self, task: Task) -> None:
+    def try_enqueue(self, task: Task) -> None:
+        """Enqueue a task immediately, raising asyncio.QueueFull when full or stopping."""
+        if not self._accepting:
+            raise asyncio.QueueFull("Worker pool is shutting down")
         self._queue.put_nowait(task)
 
+    async def enqueue(self, task: Task) -> None:
+        """Async compatibility wrapper around :meth:`try_enqueue`."""
+        self.try_enqueue(task)
+
     async def _run(self, idx: int) -> None:
-        while self._running:
+        while self._running or (not self._accepting and not self._queue.empty()):
             try:
-                task = await asyncio.wait_for(self._queue.get(), timeout=1.0)
+                task = await asyncio.wait_for(self._queue.get(), timeout=0.5)
             except TimeoutError:
+                if not self._running:
+                    break
                 continue
             except asyncio.CancelledError:
                 break
@@ -413,6 +433,7 @@ class WorkerPool:
         stop_event = asyncio.Event()
         typing_task = asyncio.create_task(_typing_loop(task.bot, chat_id, stop_event))
         full_text = ""
+        tts_tasks: list[asyncio.Task[bytes]] = []
 
         try:
             sent_msg = await task.bot.send_message(
@@ -424,8 +445,8 @@ class WorkerPool:
 
             history = self._memory.get_history(chat_id)
             pos = 0
+            scan_pos = 0
             last_edit = time.monotonic()
-            tts_tasks: list[asyncio.Task[bytes]] = []
             tts_chars = 0
 
             def _schedule_tts_fragment(raw: str) -> bool:
@@ -457,19 +478,22 @@ class WorkerPool:
                 tts_tasks.append(asyncio.create_task(self._tts_limited(fragment)))
                 return True
 
-            def queue_tts(text_so_far: str, cursor: int) -> int:
-                """Queue TTS for complete sentences, respecting both caps."""
-                cursor, new = _scan_sentences(text_so_far, cursor)
+            def queue_tts(
+                text_so_far: str, cursor: int, scanned: int
+            ) -> tuple[int, int]:
+                """Queue TTS for complete sentences in O(n), respecting both caps."""
+                cursor, new = _scan_sentences(text_so_far, cursor, scan_from=scanned)
                 for sentence in new:
                     if not _schedule_tts_fragment(sentence):
                         break
-                return cursor
+                return cursor, len(text_so_far)
 
-            def flush_tts(text_so_far: str, cursor: int) -> int:
+            def flush_tts(text_so_far: str, cursor: int) -> tuple[int, int]:
                 """Flush any trailing unpunctuated text within TTS caps."""
                 if cursor < len(text_so_far):
                     _schedule_tts_fragment(text_so_far[cursor:])
-                return len(text_so_far)
+                end = len(text_so_far)
+                return end, end
 
             # Phase 1 — streaming (fast, progressive)
             stream_ok = True
@@ -505,11 +529,11 @@ class WorkerPool:
                                 e,
                             )
 
-                    if task.is_voice:
-                        pos = queue_tts(full_text, pos)
+                if task.is_voice:
+                        pos, scan_pos = queue_tts(full_text, pos, scan_pos)
 
                 if task.is_voice:
-                    pos = flush_tts(full_text, pos)
+                    pos, scan_pos = flush_tts(full_text, pos)
 
             except (httpx.TransportError, httpx.HTTPStatusError):
                 logger.warning(
@@ -517,7 +541,7 @@ class WorkerPool:
                 )
                 stream_ok = False
                 if task.is_voice:
-                    pos = flush_tts(full_text, pos)
+                    pos, scan_pos = flush_tts(full_text, pos)
 
             # Phase 2 — fallback to non-streaming if stream failed
             if not stream_ok or not full_text:
@@ -532,12 +556,19 @@ class WorkerPool:
                     complete = None
 
                 if complete:
+                    if len(complete) > MAX_RESPONSE_CHARS:
+                        complete = complete[:MAX_RESPONSE_CHARS]
+                        logger.warning(
+                            "Fallback response exceeded %d chars; truncating",
+                            MAX_RESPONSE_CHARS,
+                        )
                     for t in tts_tasks:
                         t.cancel()
                     await asyncio.gather(*tts_tasks, return_exceptions=True)
                     tts_tasks = []
                     tts_chars = 0
                     pos = 0
+                    scan_pos = 0
                     full_text = complete
                     try:
                         await task.bot.edit_message_text(
@@ -552,8 +583,8 @@ class WorkerPool:
                             e,
                         )
                     if task.is_voice:
-                        pos = queue_tts(full_text, pos)
-                        pos = flush_tts(full_text, pos)
+                        pos, scan_pos = queue_tts(full_text, pos, scan_pos)
+                        pos, scan_pos = flush_tts(full_text, pos)
 
             if not full_text:
                 await task.bot.edit_message_text(
@@ -612,7 +643,10 @@ class WorkerPool:
                 )
         finally:
             stop_event.set()
-            await asyncio.gather(typing_task, return_exceptions=True)
+            pending_tts = [t for t in tts_tasks if not t.done()]
+            for t in pending_tts:
+                t.cancel()
+            await asyncio.gather(typing_task, *pending_tts, return_exceptions=True)
 
     async def _deliver_text(self, task: Task, msg_id: int, text: str) -> None:
         """Send or update the final text message after streaming completes."""

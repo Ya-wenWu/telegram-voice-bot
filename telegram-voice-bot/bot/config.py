@@ -75,11 +75,12 @@ MAX_VOICE_BYTES = get_positive_int("MAX_VOICE_BYTES", 10 * 1024 * 1024)
 TMP_DIR = Path(
     get("TMP_DIR", str(HOME / ".cache" / "telegram-voice-bot" / "tmp"))
     or str(HOME / ".cache" / "telegram-voice-bot" / "tmp")
-)
+).expanduser()
 STATE_DIR = Path(
     get("STATE_DIR", str(HOME / ".local" / "state" / "telegram-voice-bot"))
     or str(HOME / ".local" / "state" / "telegram-voice-bot")
-)
+).expanduser()
+
 BOT_WORKERS = get_positive_int("BOT_WORKERS", 1)
 CONCURRENT_UPDATES = get_positive_int("CONCURRENT_UPDATES", 1)
 BOT_QUEUE_MAXSIZE = get_positive_int("BOT_QUEUE_MAXSIZE", 10)

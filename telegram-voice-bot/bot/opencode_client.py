@@ -16,11 +16,6 @@ from bot.tts_provider import get_tts_provider
 
 logger = logging.getLogger(__name__)
 
-HEADERS = {
-    "Authorization": f"Bearer {ZEN_API_KEY}",
-    "Content-Type": "application/json",
-}
-
 MAX_TEXT_LEN = 8000
 
 
@@ -29,10 +24,10 @@ def _endpoint() -> str:
 
 
 def _headers() -> dict[str, str]:
-    return {
-        "Authorization": f"Bearer {ZEN_API_KEY}",
-        "Content-Type": "application/json",
-    }
+    headers = {"Content-Type": "application/json"}
+    if ZEN_API_KEY:
+        headers["Authorization"] = f"Bearer {ZEN_API_KEY}"
+    return headers
 
 
 def _messages(
