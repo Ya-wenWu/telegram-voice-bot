@@ -49,3 +49,32 @@ web-voice-bot-complete/
    ```
 3. 首次執行會自動建立 `.env`，編輯填入 `GEMINI_API_KEY` 後再執行 `./start-linux.sh`。
 4. 本機瀏覽器開啟 **http://localhost:3000**（若部署於遠端 Linux IP，請掛載 HTTPS 以啟用麥克風權限）。
+
+## 🛠️ 開發環境與資安防護一鍵建置（DeveloperSetting）
+
+專案內建跨平台自動化配置腳本，可一鍵安裝 **Gitleaks**、**Node.js v24 LTS**、**SonarQube for IDE**，並自動掛載 **Git Pre-commit Hook** 防止敏感資料外洩。
+
+### 1. 執行方式（Windows 請先關閉 Visual Studio 再執行）
+* **Windows 10 / 11（Visual Studio 2022 / 2026）**：
+  ```powershell
+  powershell -ExecutionPolicy Bypass -File .\DeveloperSetting\setup-dev-win10orabove-visualstudio.ps1
+  ```
+* **Linux（Ubuntu / Debian / Fedora / Arch）**：
+  ```bash
+  chmod +x ./DeveloperSetting/setup-dev-linux.sh && ./DeveloperSetting/setup-dev-linux.sh
+  ```
+* **macOS（Apple Silicon & Intel）**：
+  ```bash
+  chmod +x ./DeveloperSetting/setup-dev-mac.sh && ./DeveloperSetting/setup-dev-mac.sh
+  ```
+
+### 2. 執行前完整性驗證（SHA-256）
+執行腳本前，建議先計算本機檔案的 SHA-256 指紋並核對是否與下列基準一致：
+* `setup-dev-win10orabove-visualstudio.ps1`：`<貼上對應的 64 位元 Hash>`
+* `setup-dev-linux.sh`：`<貼上對應的 64 位元 Hash>`
+* `setup-dev-mac.sh`：`<貼上對應的 64 位元 Hash>`
+
+驗證指令：
+* **Windows**：`Get-FileHash .\DeveloperSetting\* -Algorithm SHA256 | Format-List`
+* **Linux**：`sha256sum ./DeveloperSetting/*.sh`
+* **macOS**：`shasum -a 256 ./DeveloperSetting/*.sh`
