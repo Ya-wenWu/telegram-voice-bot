@@ -46,7 +46,7 @@ function bytesToBase64Url(bytes: Uint8Array): string {
 }
 
 function buildMimeMessage(payload: SendEmailPayload): string {
-  const boundary = `repofetch_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+  const boundary = `repofetch_${Date.now()}_${crypto.randomUUID().replace(/-/g, '')}`;
   const bodyBytes = new TextEncoder().encode(payload.bodyText);
 
   const parts: string[] = [

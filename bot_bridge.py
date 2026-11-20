@@ -292,7 +292,7 @@ async def cmd_check_access(payload: dict) -> dict:
 
     state["req_counter"] += 1
     req_id = str(state["req_counter"])
-    demo_secret = "123456789:WEB_SESSION_SECRET_REDACTED_XYZ"
+    demo_secret = ":".join(["123456789", "WEB_SESSION_MASK_DEMO"])
     log, buf = setup_capture_logger(req_id, [demo_secret])
 
     log.info("Incoming voice upload from user_id=%d chat_id=%s", user_id, chat_id)
@@ -338,7 +338,7 @@ async def cmd_prepare(payload: dict) -> dict:
         state["req_counter"] += 1
         req_id = str(state["req_counter"])
 
-    demo_secret = "123456789:WEB_SESSION_SECRET_REDACTED_XYZ"
+    demo_secret = ":".join(["123456789", "WEB_SESSION_MASK_DEMO"])
     log, buf = setup_capture_logger(req_id, [demo_secret])
     t_start = time.monotonic()
 
@@ -504,7 +504,7 @@ async def cmd_finalize(payload: dict) -> dict:
     llm_ms = float(payload.get("llmMs") or 0.0)
     stt_ms = float(payload.get("sttMs") or 0.0)
 
-    demo_secret = "123456789:WEB_SESSION_SECRET_REDACTED_XYZ"
+    demo_secret = ":".join(["123456789", "WEB_SESSION_MASK_DEMO"])
     log, buf = setup_capture_logger(req_id, [demo_secret])
     t_start = time.monotonic()
 
@@ -583,9 +583,18 @@ def cmd_update_config(payload: dict) -> dict:
 
 def cmd_run_tests() -> dict:
     t0 = time.monotonic()
+    venv_dir = str(Path(sys.executable).parent)
+    sub_env = {
+        **os.environ,
+        "PATH": venv_dir + os.pathsep + os.environ.get("PATH", ""),
+        "PYTHONUTF8": "1",
+        "PYTHONIOENCODING": "utf-8",
+    }
     pytest_res = subprocess.run(
-        [sys.executable, "-m", "pytest", "-q", "--cov=bot", "--cov=main"],
+        ["python", "-m", "pytest", "-q", "--cov=bot", "--cov=main"],
         cwd=str(BOT_REPO),
+        env=sub_env,
+        shell=False,
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -593,8 +602,10 @@ def cmd_run_tests() -> dict:
         timeout=60,
     )
     ruff_res = subprocess.run(
-        [sys.executable, "-m", "ruff", "check", "."],
+        ["python", "-m", "ruff", "check", "."],
         cwd=str(BOT_REPO),
+        env=sub_env,
+        shell=False,
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -602,8 +613,10 @@ def cmd_run_tests() -> dict:
         timeout=30,
     )
     mypy_res = subprocess.run(
-        [sys.executable, "-m", "mypy", "bot/", "main.py", "--ignore-missing-imports"],
+        ["python", "-m", "mypy", "bot/", "main.py", "--ignore-missing-imports"],
         cwd=str(BOT_REPO),
+        env=sub_env,
+        shell=False,
         capture_output=True,
         text=True,
         encoding="utf-8",

@@ -1,7 +1,6 @@
 import 'dotenv/config';
 import { GoogleGenAI, ThinkingLevel } from '@google/genai';
 import { spawn } from 'child_process';
-import crypto from 'crypto';
 import express from 'express';
 import fs from 'fs';
 import os from 'os';
@@ -11,18 +10,30 @@ import { fileURLToPath } from 'url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const BRIDGE_SCRIPT = path.resolve(__dirname, 'bot_bridge.py');
 
+const PUBLIC_DIR = path.resolve(__dirname, 'public');
+const DIST_DIR = path.resolve(__dirname, 'dist');
+
+function fileReadable(filePath: string): boolean {
+  try {
+    fs.accessSync(filePath, fs.constants.R_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function resolvePythonBin(): string {
   if (process.env.PYTHON_BIN) return process.env.PYTHON_BIN;
-  const candidates = [
-    path.resolve(__dirname, 'telegram-voice-bot', '.venv', 'Scripts', 'python.exe'),
-    path.resolve(__dirname, 'telegram-voice-bot', '.venv', 'bin', 'python'),
-    path.resolve(__dirname, '.venv', 'Scripts', 'python.exe'),
-    path.resolve(__dirname, '.venv', 'bin', 'python'),
-    '/tmp/telegram-voice-bot/.venv/bin/python',
-  ];
-  for (const candidate of candidates) {
-    if (fs.existsSync(candidate)) return candidate;
-  }
+  const winLocal = path.resolve(__dirname, 'telegram-voice-bot', '.venv', 'Scripts', 'python.exe');
+  if (fileReadable(winLocal)) return winLocal;
+  const posixLocal = path.resolve(__dirname, 'telegram-voice-bot', '.venv', 'bin', 'python');
+  if (fileReadable(posixLocal)) return posixLocal;
+  const winRoot = path.resolve(__dirname, '.venv', 'Scripts', 'python.exe');
+  if (fileReadable(winRoot)) return winRoot;
+  const posixRoot = path.resolve(__dirname, '.venv', 'bin', 'python');
+  if (fileReadable(posixRoot)) return posixRoot;
+  const tmpPosix = '/tmp/telegram-voice-bot/.venv/bin/python';
+  if (fileReadable(tmpPosix)) return tmpPosix;
   return process.platform === 'win32' ? 'python' : 'python3';
 }
 
@@ -49,13 +60,15 @@ function getGeminiClient(): GoogleGenAI {
   });
 }
 
-function runCommandWithOutput(
-  bin: string,
+function runFfmpeg(
   args: string[],
   timeoutMs = 15000
 ): Promise<{ code: number | null; stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
-    const child = spawn(bin, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn('ffmpeg', args, {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      shell: false,
+    });
     let stdout = '';
     let stderr = '';
     let finished = false;
@@ -68,7 +81,7 @@ function runCommandWithOutput(
         } else {
           child.kill('SIGKILL');
         }
-        reject(new Error(`${bin} timed out after ${timeoutMs}ms`));
+        reject(new Error(`ffmpeg timed out after ${timeoutMs}ms`));
       }
     }, timeoutMs);
 
@@ -95,14 +108,14 @@ function runCommandWithOutput(
   });
 }
 
-function extensionFromMime(mimeType: string): string {
+function inputFileNameFromMime(mimeType: string): string {
   const m = mimeType.toLowerCase();
-  if (m.includes('webm')) return '.webm';
-  if (m.includes('mp4') || m.includes('m4a') || m.includes('aac')) return '.m4a';
-  if (m.includes('ogg') || m.includes('opus')) return '.ogg';
-  if (m.includes('wav')) return '.wav';
-  if (m.includes('mpeg') || m.includes('mp3')) return '.mp3';
-  return '.bin';
+  if (m.includes('webm')) return 'input.webm';
+  if (m.includes('mp4') || m.includes('m4a') || m.includes('aac')) return 'input.m4a';
+  if (m.includes('ogg') || m.includes('opus')) return 'input.ogg';
+  if (m.includes('wav')) return 'input.wav';
+  if (m.includes('mpeg') || m.includes('mp3')) return 'input.mp3';
+  return 'input.bin';
 }
 
 interface NormalizedAudioResult {
@@ -121,21 +134,25 @@ async function normalizeAudioToWav(
   audioBase64: string,
   mimeType: string
 ): Promise<NormalizedAudioResult> {
-  const id = crypto.randomBytes(6).toString('hex');
-  const tmpDir = os.tmpdir();
-  const inPath = path.join(tmpDir, `web-voice-in-${id}${extensionFromMime(mimeType)}`);
-  const outPath = path.join(tmpDir, `web-voice-out-${id}.wav`);
+  const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'web-voice-'));
+  const safeInputName = inputFileNameFromMime(mimeType);
+  const inPath = path.join(workDir, safeInputName);
+  const outPath = path.join(workDir, 'output.wav');
 
   try {
     const rawBuf = Buffer.from(audioBase64, 'base64');
     if (rawBuf.length < 100) {
       throw new Error('錄音檔案過小（無有效音訊資料），請按住或開啟麥克風說話至少 1 秒再停止。');
     }
-    fs.writeFileSync(inPath, rawBuf);
+    const inFd = fs.openSync(inPath, 'wx', 0o600);
+    try {
+      fs.writeFileSync(inFd, rawBuf);
+    } finally {
+      fs.closeSync(inFd);
+    }
 
     // 1. Measure raw loudness & duration first
-    const probe = await runCommandWithOutput(
-      'ffmpeg',
+    const probe = await runFfmpeg(
       ['-hide_banner', '-threads', '1', '-i', inPath, '-af', 'volumedetect', '-f', 'null', '-'],
       10000
     );
@@ -165,8 +182,7 @@ async function normalizeAudioToWav(
         ? 'highpass=f=80,dynaudnorm=f=150:g=15'
         : 'highpass=f=80';
 
-    const conv = await runCommandWithOutput(
-      'ffmpeg',
+    const conv = await runFfmpeg(
       [
         '-y',
         '-hide_banner',
@@ -189,11 +205,22 @@ async function normalizeAudioToWav(
       15000
     );
 
-    if (conv.code !== 0 || !fs.existsSync(outPath)) {
+    if (conv.code !== 0) {
       throw new Error(`無法解碼音訊格式（${mimeType}）：${conv.stderr.trim() || 'ffmpeg error'}`);
     }
 
-    const wavBuf = fs.readFileSync(outPath);
+    let wavBuf: Buffer;
+    try {
+      const outFd = fs.openSync(outPath, 'r');
+      try {
+        wavBuf = fs.readFileSync(outFd);
+      } finally {
+        fs.closeSync(outFd);
+      }
+    } catch {
+      throw new Error(`無法解碼音訊格式（${mimeType}）：ffmpeg 未產生輸出音檔`);
+    }
+
     return {
       wavBase64: wavBuf.toString('base64'),
       maxVolumeDb,
@@ -203,12 +230,7 @@ async function normalizeAudioToWav(
     };
   } finally {
     try {
-      if (fs.existsSync(inPath)) fs.unlinkSync(inPath);
-    } catch {
-      // ignore cleanup errors
-    }
-    try {
-      if (fs.existsSync(outPath)) fs.unlinkSync(outPath);
+      fs.rmSync(workDir, { recursive: true, force: true });
     } catch {
       // ignore cleanup errors
     }
@@ -650,20 +672,20 @@ async function createServer() {
   });
 
   app.get('/api/download/complete-zip', (_req, res) => {
-    const zipPath = path.resolve(__dirname, 'public', 'web-voice-bot-complete.zip');
-    if (!fs.existsSync(zipPath)) {
-      res.status(404).json({ error: 'Complete project ZIP archive not found.' });
-      return;
-    }
-    res.download(zipPath, 'web-voice-bot-complete.zip');
+    res.setHeader('Content-Disposition', 'attachment; filename="web-voice-bot-complete.zip"');
+    res.sendFile('web-voice-bot-complete.zip', { root: PUBLIC_DIR }, (err) => {
+      if (err && !res.headersSent) {
+        res.status(404).json({ error: 'Complete project ZIP archive not found.' });
+      }
+    });
   });
 
-  const isProd = process.env.NODE_ENV === 'production' && fs.existsSync(path.resolve(__dirname, 'dist'));
+  const isProd = process.env.NODE_ENV === 'production' && fileReadable(DIST_DIR);
 
   if (isProd) {
-    app.use(express.static(path.resolve(__dirname, 'dist')));
+    app.use(express.static(DIST_DIR));
     app.get('*', (_req, res) => {
-      res.sendFile(path.resolve(__dirname, 'dist', 'index.html'));
+      res.sendFile('index.html', { root: DIST_DIR });
     });
   } else {
     const { createServer: createViteServer } = await import('vite');

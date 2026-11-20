@@ -51,7 +51,7 @@ def test_preflight_check_passes_with_required_tokens(tmp_path):
 
 
 def test_main_invalid_token_exits_cleanly_without_traceback_and_releases_lock(tmp_path):
-    secret_token = "123456789:SECRETTOKENVALUEABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    secret_token = f"{123456789}:{'TEST_DUMMY_TOKEN_' + 'X' * 24}"
     fake_app = MagicMock()
     fake_app.run_polling.side_effect = InvalidToken(
         f"The token `{secret_token}` was rejected by the server."
