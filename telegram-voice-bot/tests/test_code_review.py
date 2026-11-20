@@ -3,10 +3,18 @@ from pathlib import Path
 
 import pytest
 
-# 動態載入 .github/scripts/code_review.py 模組
-SCRIPT_PATH = (
-    Path(__file__).resolve().parents[1] / ".github" / "scripts" / "code_review.py"
-)
+
+# 動態載入 .github/scripts/code_review.py 模組（相容子資料夾或根目錄 .github）
+def _resolve_code_review_script() -> Path:
+    here = Path(__file__).resolve()
+    for parent in (here.parents[1], here.parents[2]):
+        candidate = parent / ".github" / "scripts" / "code_review.py"
+        if candidate.is_file():
+            return candidate
+    return here.parents[1] / ".github" / "scripts" / "code_review.py"
+
+
+SCRIPT_PATH = _resolve_code_review_script()
 spec = importlib.util.spec_from_file_location("code_review", SCRIPT_PATH)
 assert spec is not None and spec.loader is not None
 code_review = importlib.util.module_from_spec(spec)

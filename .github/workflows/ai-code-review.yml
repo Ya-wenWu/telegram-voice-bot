@@ -8,9 +8,14 @@ permissions:
   contents: read
   pull-requests: write
 
+concurrency:
+  group: ai-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 jobs:
   review:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     # Surface real failures: with continue-on-error the run looked green
     # while the opencode step was actually failing.
     continue-on-error: false

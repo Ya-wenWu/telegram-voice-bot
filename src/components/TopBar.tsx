@@ -23,10 +23,8 @@ export function TopBar({
 }: TopBarProps) {
   const navItems: Array<{ id: WorkspaceTab; label: string }> = [
     { id: 'live', label: 'Web Bot' },
-    { id: 'delivery', label: 'Email Patch' },
-    { id: 'explorer', label: 'Explorer' },
-    { id: 'recent', label: recentCount > 0 ? `Recent (${recentCount})` : 'Recent' },
-    { id: 'formats', label: 'URL Formats' },
+    { id: 'delivery', label: 'Email / ZIP' },
+    { id: 'explorer', label: recentCount > 0 ? `GitHub Explorer (${recentCount})` : 'GitHub Explorer' },
   ];
 
   return (
@@ -38,7 +36,7 @@ export function TopBar({
           onClick={() => onSelectTab('live')}
           className="font-display text-lg font-bold tracking-tight text-slate-900 hover:text-blue-700 transition-colors whitespace-nowrap shrink-0 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2 rounded"
         >
-          RepoFetch
+          Web Voice Bot
         </button>
 
         {/* Zone 2: Concise single-line text navigation links */}

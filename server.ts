@@ -32,12 +32,12 @@ function resolvePythonBin(): string {
   if (fileReadable(winRoot)) return winRoot;
   const posixRoot = path.resolve(__dirname, '.venv', 'bin', 'python');
   if (fileReadable(posixRoot)) return posixRoot;
+  const optVenv = '/opt/bot-venv/bin/python';
+  if (fileReadable(optVenv)) return optVenv;
   const tmpPosix = '/tmp/telegram-voice-bot/.venv/bin/python';
   if (fileReadable(tmpPosix)) return tmpPosix;
   return process.platform === 'win32' ? 'python' : 'python3';
 }
-
-const PYTHON_BIN = resolvePythonBin();
 
 const BOT_SYSTEM_INSTRUCTION = `你是部署在 Web Voice Bot 內的智慧語音助手（底層使用專案開發的 Python 語音管線、ConversationStore 多輪記憶、Edge-TTS 與 ffmpeg）。
 請遵守以下回覆原則：
@@ -239,7 +239,7 @@ async function normalizeAudioToWav(
 
 function runPythonBridge<T>(command: string, payload?: unknown): Promise<T> {
   return new Promise((resolve, reject) => {
-    const child = spawn(PYTHON_BIN, [BRIDGE_SCRIPT, command], {
+    const child = spawn(resolvePythonBin(), [BRIDGE_SCRIPT, command], {
       cwd: __dirname,
       stdio: ['pipe', 'pipe', 'pipe'],
       env: {
@@ -367,10 +367,18 @@ async function generateBotReply(
     },
   ];
 
+  const primaryModel = (process.env.GEMINI_MODEL || '').trim() || 'gemini-3.1-flash-lite';
+  const fallbackModel = (process.env.GEMINI_FALLBACK_MODEL || '').trim() || 'gemini-4-hydrogen';
+
   const attempts: Array<{ model: string; useLowThinking: boolean; timeoutMs: number; delayMs: number }> = [
-    { model: 'gemini-3.1-flash-lite', useLowThinking: false, timeoutMs: 9000, delayMs: 0 },
-    { model: 'gemini-3.1-flash-lite', useLowThinking: false, timeoutMs: 10000, delayMs: 300 },
-    { model: 'gemini-4-hydrogen', useLowThinking: true, timeoutMs: 10000, delayMs: 400 },
+    { model: primaryModel, useLowThinking: false, timeoutMs: 9000, delayMs: 0 },
+    { model: primaryModel, useLowThinking: false, timeoutMs: 10000, delayMs: 300 },
+    {
+      model: fallbackModel,
+      useLowThinking: fallbackModel === 'gemini-4-hydrogen',
+      timeoutMs: 10000,
+      delayMs: 400,
+    },
   ];
 
   let lastErr: unknown;
@@ -435,7 +443,9 @@ async function transcribeVoiceAudio(
     },
   ];
 
-  const models = ['gemini-3.1-flash-lite', 'gemini-3.1-flash-lite', 'gemini-4-hydrogen'];
+  const primaryModel = (process.env.GEMINI_MODEL || '').trim() || 'gemini-3.1-flash-lite';
+  const fallbackModel = (process.env.GEMINI_FALLBACK_MODEL || '').trim() || 'gemini-4-hydrogen';
+  const models = [primaryModel, primaryModel, fallbackModel];
   let lastErr: unknown;
 
   for (let i = 0; i < models.length; i += 1) {
@@ -511,196 +521,220 @@ async function executeConversationPipeline(params: {
 }
 
 async function createServer() {
-  const app = express();
-  app.use(express.json({ limit: '15mb' }));
+    const app = express();
+    app.use(express.json({ limit: '15mb' }));
 
-  app.get('/api/bot/status', async (_req, res) => {
-    try {
-      const data = await runPythonBridge('status');
-      res.json(data);
-    } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : 'Status check failed' });
-    }
-  });
-
-  app.get('/api/bot/history', async (req, res) => {
-    try {
-      const chatId = String(req.query.chatId ?? '123456');
-      const data = await runPythonBridge('history', { chatId });
-      res.json(data);
-    } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : 'History fetch failed' });
-    }
-  });
-
-  app.post('/api/bot/config', async (req, res) => {
-    try {
-      const data = await runPythonBridge('config', req.body ?? {});
-      res.json(data);
-    } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : 'Config update failed' });
-    }
-  });
-
-  app.post('/api/bot/chat', async (req, res) => {
-    try {
-      const body = req.body ?? {};
-      const userId = Number(body.userId ?? 123456);
-      const chatId = body.chatId ?? userId;
-      const text = String(body.text ?? '').trim();
-      const isVoice = Boolean(body.isVoice ?? true);
-
-      const data = await executeConversationPipeline({
-        userId,
-        chatId,
-        text,
-        isVoice,
-      });
-      res.json(data);
-    } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : 'Chat execution failed' });
-    }
-  });
-
-  app.post('/api/bot/voice', async (req, res) => {
-    try {
-      const body = req.body ?? {};
-      const userId = Number(body.userId ?? 123456);
-      const chatId = body.chatId ?? userId;
-      const audioBase64 = String(body.audioBase64 ?? '').trim();
-      const mimeType = String(body.mimeType ?? 'audio/webm');
-      const clientTranscript = String(body.clientTranscript ?? '').trim();
-      const isVoice = body.isVoice !== undefined ? Boolean(body.isVoice) : true;
-
-      if (!audioBase64) {
-        res.status(400).json({ error: '未收到錄音資料，請重新錄音。' });
-        return;
-      }
-
-      // 1. Enforce allowlist + quota before invoking ffmpeg/STT
-      const access = await runPythonBridge<AccessResult>('check_access', { userId, chatId });
-      if (access.rejected) {
-        res.json({
-          ok: false,
-          rejected: true,
-          reason: access.reason,
-          reqId: access.reqId,
-          logs: access.logs ?? [],
-          elapsedMs: 1,
-        });
-        return;
-      }
-
-      // 2. Transcode browser audio (WebM/Opus, MP4/AAC, OGG, MP3, WAV) to normalized 16kHz mono WAV
-      const normalized = await normalizeAudioToWav(audioBase64, mimeType);
-
-      if (normalized.isSilent && !clientTranscript) {
-        res.status(422).json({
-          error: `偵測到麥克風錄音完全靜音（峰值音量 ${normalized.maxVolumeDb} dB，長度 ${normalized.durationSec ?? 0} 秒）。請檢查電腦麥克風是否靜音，或在上方「麥克風裝置」選單切換其他輸入裝置後再試。`,
-          diagnostics: {
-            maxVolumeDb: normalized.maxVolumeDb,
-            meanVolumeDb: normalized.meanVolumeDb,
-            durationSec: normalized.durationSec,
-            isSilent: true,
-          },
-        });
-        return;
-      }
-
-      // 3. Server-side STT on clean 16kHz mono WAV (with browser live-caption fallback if needed)
-      let transcript = '';
-      let sttMs = 0;
-      try {
-        const sttRes = await transcribeVoiceAudio(normalized.wavBase64);
-        transcript = sttRes.transcript;
-        sttMs = sttRes.sttMs;
-      } catch (err) {
-        if (!clientTranscript) {
-          throw err;
+    app.get('/api/bot/status', async (_req, res) => {
+        try {
+            const data = await runPythonBridge('status');
+            res.json(data);
+        } catch (err) {
+            res.status(500).json({ error: err instanceof Error ? err.message : 'Status check failed' });
         }
-      }
+    });
 
-      if (!transcript && clientTranscript) {
-        transcript = clientTranscript;
-      }
+    app.get('/api/bot/history', async (req, res) => {
+        try {
+            const chatId = String(req.query.chatId ?? '123456');
+            const data = await runPythonBridge('history', { chatId });
+            res.json(data);
+        } catch (err) {
+            res.status(500).json({ error: err instanceof Error ? err.message : 'History fetch failed' });
+        }
+    });
 
-      if (!transcript) {
-        res.status(422).json({
-          error: `有收到聲音（峰值 ${normalized.maxVolumeDb ?? '?'} dB，長度 ${normalized.durationSec ?? '?'} 秒），但無法辨識清楚字句，請靠近麥克風說慢一點再試。`,
-          diagnostics: {
-            maxVolumeDb: normalized.maxVolumeDb,
-            meanVolumeDb: normalized.meanVolumeDb,
-            durationSec: normalized.durationSec,
-            isSilent: false,
-          },
+    app.post('/api/bot/config', async (req, res) => {
+        try {
+            const data = await runPythonBridge('config', req.body ?? {});
+            res.json(data);
+        } catch (err) {
+            res.status(500).json({ error: err instanceof Error ? err.message : 'Config update failed' });
+        }
+    });
+
+    app.post('/api/bot/chat', async (req, res) => {
+        try {
+            const body = req.body ?? {};
+            const userId = Number(body.userId ?? 123456);
+            const chatId = body.chatId ?? userId;
+            const text = String(body.text ?? '').trim();
+            const isVoice = Boolean(body.isVoice ?? true);
+
+            const data = await executeConversationPipeline({
+                userId,
+                chatId,
+                text,
+                isVoice,
+            });
+            res.json(data);
+        } catch (err) {
+            res.status(500).json({ error: err instanceof Error ? err.message : 'Chat execution failed' });
+        }
+    });
+
+    app.post('/api/bot/voice', async (req, res) => {
+        try {
+            const body = req.body ?? {};
+            const userId = Number(body.userId ?? 123456);
+            const chatId = body.chatId ?? userId;
+            const audioBase64 = String(body.audioBase64 ?? '').trim();
+            const mimeType = String(body.mimeType ?? 'audio/webm');
+            const clientTranscript = String(body.clientTranscript ?? '').trim();
+            const isVoice = body.isVoice !== undefined ? Boolean(body.isVoice) : true;
+
+            if (!audioBase64) {
+                res.status(400).json({ error: '未收到錄音資料，請重新錄音。' });
+                return;
+            }
+
+            // 1. Enforce allowlist + quota before invoking ffmpeg/STT
+            const access = await runPythonBridge<AccessResult>('check_access', { userId, chatId });
+            if (access.rejected) {
+                res.json({
+                    ok: false,
+                    rejected: true,
+                    reason: access.reason,
+                    reqId: access.reqId,
+                    logs: access.logs ?? [],
+                    elapsedMs: 1,
+                });
+                return;
+            }
+
+            // 2. Transcode browser audio (WebM/Opus, MP4/AAC, OGG, MP3, WAV) to normalized 16kHz mono WAV
+            const normalized = await normalizeAudioToWav(audioBase64, mimeType);
+
+            if (normalized.isSilent && !clientTranscript) {
+                res.status(422).json({
+                    error: `偵測到麥克風錄音完全靜音（峰值音量 ${normalized.maxVolumeDb} dB，長度 ${normalized.durationSec ?? 0} 秒）。請檢查電腦麥克風是否靜音，或在上方「麥克風裝置」選單切換其他輸入裝置後再試。`,
+                    diagnostics: {
+                        maxVolumeDb: normalized.maxVolumeDb,
+                        meanVolumeDb: normalized.meanVolumeDb,
+                        durationSec: normalized.durationSec,
+                        isSilent: true,
+                    },
+                });
+                return;
+            }
+
+            // 3. Server-side STT on clean 16kHz mono WAV (with browser live-caption fallback if needed)
+            let transcript = '';
+            let sttMs = 0;
+            try {
+                const sttRes = await transcribeVoiceAudio(normalized.wavBase64);
+                transcript = sttRes.transcript;
+                sttMs = sttRes.sttMs;
+            } catch (err) {
+                if (!clientTranscript) {
+                    throw err;
+                }
+            }
+
+            if (!transcript && clientTranscript) {
+                transcript = clientTranscript;
+            }
+
+            if (!transcript) {
+                res.status(422).json({
+                    error: `有收到聲音（峰值 ${normalized.maxVolumeDb ?? '?'} dB，長度 ${normalized.durationSec ?? '?'} 秒），但無法辨識清楚字句，請靠近麥克風說慢一點再試。`,
+                    diagnostics: {
+                        maxVolumeDb: normalized.maxVolumeDb,
+                        meanVolumeDb: normalized.meanVolumeDb,
+                        durationSec: normalized.durationSec,
+                        isSilent: false,
+                    },
+                });
+                return;
+            }
+
+            // 4. Execute multi-turn AI reply + Python ConversationStore + TTSProvider + ffmpeg
+            const result = await executeConversationPipeline({
+                userId,
+                chatId,
+                text: transcript,
+                isVoice,
+                reqId: access.reqId,
+                preLogs: access.preLogs ?? [],
+                sttMs,
+            });
+
+            res.json({
+                ...result,
+                transcript,
+                sttMs,
+                diagnostics: {
+                    maxVolumeDb: normalized.maxVolumeDb,
+                    durationSec: normalized.durationSec,
+                },
+            });
+        } catch (err) {
+            res.status(500).json({ error: err instanceof Error ? err.message : 'Voice processing failed' });
+        }
+    });
+
+    app.post('/api/bot/run-tests', async (_req, res) => {
+        try {
+            const data = await runPythonBridge('tests');
+            res.json(data);
+        } catch (err) {
+            res.status(500).json({ error: err instanceof Error ? err.message : 'Test runner failed' });
+        }
+    });
+
+    app.get('/api/download/complete-zip', (_req, res) => {
+        res.setHeader('Content-Disposition', 'attachment; filename="web-voice-bot-complete.zip"');
+        res.sendFile(path.join(PUBLIC_DIR, 'web-voice-bot-complete.zip'), (err) => {
+            if (err && !res.headersSent) {
+                res.status(404).json({ error: 'Complete project ZIP archive not found.' });
+            }
         });
-        return;
-      }
+    });
 
-      // 4. Execute multi-turn AI reply + Python ConversationStore + TTSProvider + ffmpeg
-      const result = await executeConversationPipeline({
-        userId,
-        chatId,
-        text: transcript,
-        isVoice,
-        reqId: access.reqId,
-        preLogs: access.preLogs ?? [],
-        sttMs,
-      });
+    app.get('/api/download/launcher/:platform', (req, res) => {
+        const platform = req.params.platform;
+        if (platform === 'windows') {
+            res.setHeader('Content-Disposition', 'attachment; filename="start-win11.ps1"');
+            res.sendFile(path.join(__dirname, 'start-win11.ps1'), (err) => {
+                if (err && !res.headersSent) {
+                    res.status(404).json({ error: 'Windows launcher script not found.' });
+                }
+            });
+            return;
+        }
+        if (platform === 'linux') {
+            res.setHeader('Content-Disposition', 'attachment; filename="start-linux.sh"');
+            res.sendFile(path.join(__dirname, 'start-linux.sh'), (err) => {
+                if (err && !res.headersSent) {
+                    res.status(404).json({ error: 'Linux launcher script not found.' });
+                }
+            });
+            return;
+        }
+        res.status(400).json({ error: 'Unsupported platform. Use "windows" or "linux".' });
+    });
 
-      res.json({
-        ...result,
-        transcript,
-        sttMs,
-        diagnostics: {
-          maxVolumeDb: normalized.maxVolumeDb,
-          durationSec: normalized.durationSec,
-        },
-      });
-    } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : 'Voice processing failed' });
+    const isProd = process.env.NODE_ENV === 'production' && fileReadable(DIST_DIR);
+
+    if (isProd) {
+        app.use(express.static(DIST_DIR));
+        app.get('*', (_req, res) => {
+            res.sendFile(path.join(DIST_DIR, 'index.html'));
+        });
+    } else {
+        const { createServer: createViteServer } = await import('vite');
+        const vite = await createViteServer({
+            server: { middlewareMode: true },
+            appType: 'spa',
+        });
+        app.use(vite.middlewares);
     }
-  });
 
-  app.post('/api/bot/run-tests', async (_req, res) => {
-    try {
-      const data = await runPythonBridge('tests');
-      res.json(data);
-    } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : 'Test runner failed' });
-    }
-  });
-
-  app.get('/api/download/complete-zip', (_req, res) => {
-    res.setHeader('Content-Disposition', 'attachment; filename="web-voice-bot-complete.zip"');
-    res.sendFile('web-voice-bot-complete.zip', { root: PUBLIC_DIR }, (err) => {
-      if (err && !res.headersSent) {
-        res.status(404).json({ error: 'Complete project ZIP archive not found.' });
-      }
+    const port = Number(process.env.PORT || 3000);
+    app.listen(port, '0.0.0.0', () => {
+        console.log(`Server listening on http://0.0.0:${port}`);
     });
-  });
-
-  const isProd = process.env.NODE_ENV === 'production' && fileReadable(DIST_DIR);
-
-  if (isProd) {
-    app.use(express.static(DIST_DIR));
-    app.get('*', (_req, res) => {
-      res.sendFile('index.html', { root: DIST_DIR });
-    });
-  } else {
-    const { createServer: createViteServer } = await import('vite');
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: 'spa',
-    });
-    app.use(vite.middlewares);
-  }
-
-  const port = Number(process.env.PORT || 3000);
-  app.listen(port, '0.0.0.0', () => {
-    console.log(`Server listening on http://0.0.0.0:${port}`);
-  });
 }
+
 
 createServer().catch((err) => {
   console.error('Failed to start server:', err);

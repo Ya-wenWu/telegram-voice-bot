@@ -220,7 +220,7 @@ async def synthesize_voice(
 async def cmd_status() -> dict:
     state = load_state()
     git_branch = "packaged-local"
-    git_commit = "c1a5e35"
+    git_commit = "ready"
     git_log: list[str] = []
     if (BOT_REPO / ".git").exists():
         try:
@@ -259,6 +259,7 @@ async def cmd_status() -> dict:
 
     total_msgs = sum(len(msgs) for msgs in state["chats"].values())
     return {
+        "hostOs": "windows" if sys.platform.startswith("win") else "linux",
         "pythonVersion": sys.version.split()[0],
         "ffmpegAvailable": shutil.which("ffmpeg") is not None,
         "ffprobeAvailable": shutil.which("ffprobe") is not None,
