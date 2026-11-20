@@ -444,7 +444,7 @@ export function BotLiveConsole() {
 
       const audioUrl = data.audioBase64 ? `data:audio/mpeg;base64,${data.audioBase64}` : null;
       const item: ChatTurnItem = {
-        id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+        id: `${Date.now()}-${crypto.randomUUID()}`,
         userId: resolvedUserId,
         userText: text,
         inputMode: 'text',
@@ -547,7 +547,7 @@ export function BotLiveConsole() {
 
       const audioUrl = data.audioBase64 ? `data:audio/mpeg;base64,${data.audioBase64}` : null;
       const item: ChatTurnItem = {
-        id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+        id: `${Date.now()}-${crypto.randomUUID()}`,
         userId: resolvedUserId,
         userText: data.transcript || clientTranscript || fallbackLabel,
         inputMode: 'voice',

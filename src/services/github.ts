@@ -363,21 +363,71 @@ export function buildFileTree(items: GitHubTreeItem[]): {
   };
 }
 
+const GITHUB_IDENT_RE = /^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,99})$/;
+
+function assertSafeGitHubIdentifier(value: string, label: string): string {
+  const trimmed = value.trim();
+  if (!trimmed || trimmed === '.' || trimmed === '..' || !GITHUB_IDENT_RE.test(trimmed)) {
+    throw new Error(`Invalid GitHub ${label}.`);
+  }
+  return encodeURIComponent(trimmed);
+}
+
+function assertSafeGitHubBranch(branch: string): string {
+  const trimmed = branch.trim();
+  if (!trimmed || trimmed.includes('..') || /[\x00-\x1f\x7f\\]/.test(trimmed)) {
+    throw new Error('Invalid GitHub branch name.');
+  }
+  return trimmed
+    .split('/')
+    .map((seg) => encodeURIComponent(seg))
+    .join('/');
+}
+
+function assertSafeRepoFilePath(filePath: string): string {
+  const segments = filePath.split('/').filter((s) => s.length > 0);
+  if (segments.length === 0 || segments.some((s) => s === '.' || s === '..' || /[\x00-\x1f\x7f\\]/.test(s))) {
+    throw new Error('Invalid repository file path.');
+  }
+  return segments.map((segment) => encodeURIComponent(segment)).join('/');
+}
+
+async function fetchGitHubApi(pathname: string, init: RequestInit): Promise<Response> {
+  const url = new URL(pathname, 'https://api.github.com');
+  if (url.origin !== 'https://api.github.com') {
+    throw new Error('Blocked request to non-GitHub API origin.');
+  }
+  return fetch(url, init);
+}
+
+async function fetchRawGitHubFile(
+  owner: string,
+  repo: string,
+  branch: string,
+  filePath: string,
+  init?: RequestInit
+): Promise<Response> {
+  const url = new URL(buildRawFileUrl(owner, repo, branch, filePath));
+  if (url.origin !== 'https://raw.githubusercontent.com') {
+    throw new Error('Blocked request to non-GitHub raw content origin.');
+  }
+  return fetch(url, init);
+}
+
 export async function fetchRepositoryBundle(
   parsed: ParsedGitHubUrl,
   overrideBranch?: string,
   onStage?: (stage: string) => void,
   signal?: AbortSignal
 ): Promise<RepositoryBundle> {
+  const safeOwner = assertSafeGitHubIdentifier(parsed.owner, 'owner');
+  const safeRepo = assertSafeGitHubIdentifier(parsed.repo, 'repository');
   const headers: HeadersInit = {
     Accept: 'application/vnd.github+json',
   };
 
   onStage?.(`Fetching repository metadata for ${parsed.owner}/${parsed.repo}`);
-  const repoRes = await fetch(
-    `https://api.github.com/repos/${encodeURIComponent(parsed.owner)}/${encodeURIComponent(parsed.repo)}`,
-    { headers, signal }
-  );
+  const repoRes = await fetchGitHubApi(`/repos/${safeOwner}/${safeRepo}`, { headers, signal });
 
   if (!repoRes.ok) {
     throw new Error(buildApiErrorMessage(repoRes, `Repository "${parsed.owner}/${parsed.repo}"`));
@@ -385,18 +435,19 @@ export async function fetchRepositoryBundle(
 
   const meta = (await repoRes.json()) as GitHubRepoMeta;
   const targetBranch = overrideBranch || parsed.branch || meta.default_branch;
+  const safeBranch = assertSafeGitHubBranch(targetBranch);
 
   onStage?.(`Loading branches and directory tree (${targetBranch})`);
 
   const [branchesRes, treeRes] = await Promise.all([
-    fetch(
-      `https://api.github.com/repos/${encodeURIComponent(parsed.owner)}/${encodeURIComponent(parsed.repo)}/branches?per_page=100`,
-      { headers, signal }
-    ).catch(() => null),
-    fetch(
-      `https://api.github.com/repos/${encodeURIComponent(parsed.owner)}/${encodeURIComponent(parsed.repo)}/git/trees/${encodeURIComponent(targetBranch)}?recursive=1`,
-      { headers, signal }
-    ),
+    fetchGitHubApi(`/repos/${safeOwner}/${safeRepo}/branches?per_page=100`, {
+      headers,
+      signal,
+    }).catch(() => null),
+    fetchGitHubApi(`/repos/${safeOwner}/${safeRepo}/git/trees/${safeBranch}?recursive=1`, {
+      headers,
+      signal,
+    }),
   ]);
 
   if (!treeRes.ok) {
@@ -452,15 +503,19 @@ export function buildRawFileUrl(
   branch: string,
   filePath: string
 ): string {
-  const encodedPath = filePath
-    .split('/')
-    .map((segment) => encodeURIComponent(segment))
-    .join('/');
-  return `https://raw.githubusercontent.com/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/${encodeURIComponent(branch)}/${encodedPath}`;
+  const safeOwner = assertSafeGitHubIdentifier(owner, 'owner');
+  const safeRepo = assertSafeGitHubIdentifier(repo, 'repository');
+  const safeBranch = assertSafeGitHubBranch(branch);
+  const encodedPath = assertSafeRepoFilePath(filePath);
+  const url = new URL(`/${safeOwner}/${safeRepo}/${safeBranch}/${encodedPath}`, 'https://raw.githubusercontent.com');
+  return url.toString();
 }
 
 export function getFullArchiveUrl(owner: string, repo: string, branch: string): string {
-  return `https://github.com/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/archive/refs/heads/${encodeURIComponent(branch)}.zip`;
+  const safeOwner = assertSafeGitHubIdentifier(owner, 'owner');
+  const safeRepo = assertSafeGitHubIdentifier(repo, 'repository');
+  const safeBranch = assertSafeGitHubBranch(branch);
+  return new URL(`/${safeOwner}/${safeRepo}/archive/refs/heads/${safeBranch}.zip`, 'https://github.com').toString();
 }
 
 export async function fetchFileInspection(
@@ -493,7 +548,7 @@ export async function fetchFileInspection(
     };
   }
 
-  const res = await fetch(rawUrl, { signal });
+  const res = await fetchRawGitHubFile(owner, repo, branch, filePath, { signal });
   if (!res.ok) {
     throw new Error(`Could not fetch file content (HTTP ${res.status}).`);
   }
@@ -543,8 +598,7 @@ export async function downloadSingleFile(
   branch: string,
   filePath: string
 ): Promise<void> {
-  const rawUrl = buildRawFileUrl(owner, repo, branch, filePath);
-  const res = await fetch(rawUrl);
+  const res = await fetchRawGitHubFile(owner, repo, branch, filePath);
   if (!res.ok) {
     throw new Error(`Failed to download ${filePath} (HTTP ${res.status}).`);
   }
@@ -583,8 +637,7 @@ export async function downloadFilesAsZip(
       onProgress?.({ completed, total, failed, currentFile: path });
 
       try {
-        const rawUrl = buildRawFileUrl(owner, repo, branch, path);
-        const res = await fetch(rawUrl);
+        const res = await fetchRawGitHubFile(owner, repo, branch, path);
         if (!res.ok) {
           failed += 1;
         } else {
