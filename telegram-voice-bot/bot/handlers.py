@@ -59,7 +59,6 @@ def _pool_has_space(pool: WorkerPool) -> bool:
     return True
 
 
-
 def _check_auth_and_throttle(update: Update) -> tuple[int | None, str | None]:
     """Shared authorization and throttling guard.
 
