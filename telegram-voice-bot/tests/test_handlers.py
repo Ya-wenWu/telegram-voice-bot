@@ -156,7 +156,6 @@ class TestHandleText:
         finally:
             h.worker_pool = None
 
-
     @pytest.mark.asyncio()
     async def test_enqueues_task_with_req_id(self):
         h.ALLOWED_USER_IDS = [123]

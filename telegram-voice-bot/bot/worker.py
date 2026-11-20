@@ -281,6 +281,8 @@ def _write_text(path: str, data: str) -> None:
 def _read_bytes(path: str) -> bytes:
     with open(path, "rb") as fh:
         return fh.read()
+
+
 class WorkerPool:
     def __init__(
         self,
