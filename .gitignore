@@ -1,37 +1,9 @@
-
-# Build
-# Environment
-# IDE
-# OS
-# Python
-# Testing
-*.egg
-*.egg-info/
-*.log
-*.mp3
-*.ogg
-*.py[cod]
-*.pyc
-*.swo
-*.swp
-*.tar.gz
-*.whl
-*~
-.DS_Store
-.coverage
-.coverage.*
-.env
-.env.*.local
-.env.local
-.idea/
-.pytest_cache/
-.venv/
-.vscode/
-Thumbs.db
-__pycache__/
+node_modules/
 build/
 dist/
-htmlcov/
-tests/__pycache__/
-venv/
+coverage/
+.DS_Store
+*.log
+.env*
+!.env.example
 /.vs
