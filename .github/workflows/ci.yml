@@ -27,14 +27,14 @@ jobs:
         run: |
           pip install pip-audit==2.7.3
           pip-audit --strict -r requirements.txt
-
   dependency-review:
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request'
     steps:
       - uses: actions/checkout@v7
       - uses: actions/dependency-review-action@v5
-
+        with:
+          retry-on-snapshot-warnings: true
   web-build:
     needs: security
     runs-on: ubuntu-latest
@@ -42,14 +42,13 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "24"
           cache: npm
       - name: Install & verify Web Voice Bot
         run: |
           npm ci
           npm run lint
           npm run build
-
   build:
     needs: security
     runs-on: ubuntu-latest
