@@ -300,25 +300,27 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
 }
 
 interface PrepareResult {
-  ok: boolean;
-  rejected?: boolean;
-  handled?: boolean;
-  reason?: string;
-  reply?: string;
-  reqId?: string;
-  history?: Array<{ role: string; content: string }>;
-  preLogs?: string[];
-  logs?: string[];
-  elapsedMs?: number;
+    ok: boolean;
+    rejected?: boolean;
+    handled?: boolean;
+    quotaAllowed?: boolean;
+    reason?: string;
+    reply?: string;
+    reqId?: string;
+    history?: Array<{ role: string; content: string }>;
+    preLogs?: string[];
+    logs?: string[];
+    elapsedMs?: number;
 }
 
 interface AccessResult {
-  ok: boolean;
-  rejected?: boolean;
-  reason?: string;
-  reqId?: string;
-  preLogs?: string[];
-  logs?: string[];
+    ok: boolean;
+    rejected?: boolean;
+    quotaAllowed?: boolean;
+    reason?: string;
+    reqId?: string;
+    preLogs?: string[];
+    logs?: string[];
 }
 
 function isTransientGeminiError(err: unknown): boolean {
@@ -484,44 +486,102 @@ async function transcribeVoiceAudio(
 }
 
 async function executeConversationPipeline(params: {
-  userId: number;
-  chatId: number | string;
-  text: string;
-  isVoice: boolean;
-  reqId?: string;
-  preLogs?: string[];
-  sttMs?: number;
+    userId: number;
+    chatId: number | string;
+    text: string;
+    isVoice: boolean;
+    reqId?: string;
+    preLogs?: string[];
+    sttMs?: number;
 }) {
-  const prep = await runPythonBridge<PrepareResult>('prepare', {
-    userId: params.userId,
-    chatId: params.chatId,
-    text: params.text,
-    isVoice: params.isVoice,
-    reqId: params.reqId,
-    preLogs: params.preLogs,
-  });
+    const prep = await runPythonBridge<PrepareResult>('prepare', {
+        userId: params.userId,
+        chatId: params.chatId,
+        text: params.text,
+        isVoice: params.isVoice,
+        reqId: params.reqId,
+        preLogs: params.preLogs,
+    });
 
-  if (prep.rejected || prep.handled) {
-    return prep;
-  }
+    if (prep.rejected || prep.handled) {
+        return prep;
+    }
 
-  const { reply, llmMs } = await generateBotReply(params.text, prep.history ?? []);
+    if (prep.quotaAllowed === false) {
+        return {
+            ...prep,
+            ok: false,
+            rejected: true,
+            reason: prep.reason || '今日額度已用完，請明天再試。',
+        };
+    }
 
-  return runPythonBridge<Record<string, unknown>>('finalize', {
-    userId: params.userId,
-    chatId: params.chatId,
-    text: params.text,
-    reply,
-    reqId: prep.reqId,
-    isVoice: params.isVoice,
-    preLogs: prep.preLogs ?? [],
-    sttMs: params.sttMs ?? 0,
-    llmMs,
-  });
+    const { reply, llmMs } = await generateBotReply(params.text, prep.history ?? []);
+
+    return runPythonBridge<Record<string, unknown>>('finalize', {
+        userId: params.userId,
+        chatId: params.chatId,
+        text: params.text,
+        reply,
+        reqId: prep.reqId,
+        isVoice: params.isVoice,
+        preLogs: prep.preLogs ?? [],
+        sttMs: params.sttMs ?? 0,
+        llmMs,
+    });
 }
+
+function isLoopbackAddress(remoteAddress: string | undefined): boolean {
+    if (!remoteAddress) return false;
+    return (
+        remoteAddress === '127.0.0.1' ||
+        remoteAddress === '::1' ||
+        remoteAddress === '::ffff:127.0.0.1'
+    );
+}
+
+const _webRateLimit = new Map<string, number>();
+
+function requireApiGuard(
+    req: express.Request,
+    res: express.Response,
+    next: express.NextFunction
+): void {
+    const configuredToken = (process.env.WEB_API_TOKEN || '').trim();
+    const isLocal = isLoopbackAddress(req.socket.remoteAddress);
+
+    if (configuredToken) {
+        const authHeader = req.headers.authorization || '';
+        const bearer = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
+        if (bearer !== configuredToken) {
+            res.status(401).json({ error: 'Unauthorized: invalid or missing API token.' });
+            return;
+        }
+    } else if (!isLocal) {
+        res.status(403).json({
+            error: 'Forbidden: non-loopback access requires WEB_API_TOKEN to be configured.',
+        });
+        return;
+    }
+
+    if (req.method === 'POST') {
+        const key = `${req.ip}:${req.path}`;
+        const now = Date.now();
+        const last = _webRateLimit.get(key) ?? 0;
+        if (now - last < 800) {
+            res.status(429).json({ error: 'Too many requests, please wait.' });
+            return;
+        }
+        _webRateLimit.set(key, now);
+    }
+
+    next();
+}
+
 
 async function createServer() {
     const app = express();
+    app.use('/api/bot', requireApiGuard);
     app.use(express.json({ limit: '15mb' }));
 
     app.get('/api/bot/status', async (_req, res) => {
@@ -589,11 +649,12 @@ async function createServer() {
 
             // 1. Enforce allowlist + quota before invoking ffmpeg/STT
             const access = await runPythonBridge<AccessResult>('check_access', { userId, chatId });
-            if (access.rejected) {
+            if (access.rejected || access.quotaAllowed === false) {
                 res.json({
                     ok: false,
                     rejected: true,
-                    reason: access.reason,
+                    quotaAllowed: access.quotaAllowed ?? false,
+                    reason: access.reason || '今日額度已用完，請明天再試。',
                     reqId: access.reqId,
                     logs: access.logs ?? [],
                     elapsedMs: 1,
@@ -730,8 +791,9 @@ async function createServer() {
     }
 
     const port = Number(process.env.PORT || 3000);
-    app.listen(port, '0.0.0.0', () => {
-        console.log(`Server listening on http://0.0.0:${port}`);
+    const host = process.env.HOST || '127.0.0.1';
+    app.listen(port, host, () => {
+        console.log(`Server listening on http://${host}:${port}`);
     });
 }
 

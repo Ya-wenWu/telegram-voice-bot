@@ -146,11 +146,16 @@ class TestHandleText:
         h._last_request.clear()
         update = _make_update(user_id=123)
         context = _make_context()
-        with patch("bot.handlers.check_daily_quota", AsyncMock(return_value=False)):
-            await handle_text(update, context)
-        update.message.reply_text.assert_awaited_once_with(
-            "今日額度已用完，請明天再試。"
-        )
+        h.worker_pool = MagicMock()
+        try:
+            with patch("bot.handlers.check_daily_quota", AsyncMock(return_value=False)):
+                await handle_text(update, context)
+            update.message.reply_text.assert_awaited_once_with(
+                "今日額度已用完，請明天再試。"
+            )
+        finally:
+            h.worker_pool = None
+
 
     @pytest.mark.asyncio()
     async def test_enqueues_task_with_req_id(self):
@@ -215,11 +220,15 @@ class TestHandleVoice:
         h._last_request.clear()
         update = _make_update(user_id=123, voice_file_size=1000)
         context = _make_context()
-        with patch("bot.handlers.check_daily_quota", AsyncMock(return_value=False)):
-            await handle_voice(update, context)
-        update.message.reply_text.assert_awaited_once_with(
-            "今日額度已用完，請明天再試。"
-        )
+        h.worker_pool = MagicMock()
+        try:
+            with patch("bot.handlers.check_daily_quota", AsyncMock(return_value=False)):
+                await handle_voice(update, context)
+            update.message.reply_text.assert_awaited_once_with(
+                "今日額度已用完，請明天再試。"
+            )
+        finally:
+            h.worker_pool = None
 
     @pytest.mark.asyncio()
     async def test_enqueues_voice_without_blocking_polling_loop(self):
@@ -257,3 +266,25 @@ class TestHandleVoice:
             "⚠️ 系統目前排隊請求過多，請稍後再試"
         )
         h.worker_pool = None
+
+    @pytest.mark.asyncio()
+    async def test_queue_full_does_not_charge_quota_when_pool_full(self):
+        h.ALLOWED_USER_IDS = [123]
+        h._last_request.clear()
+        update = _make_update(user_id=123, text="hello")
+        context = _make_context()
+        pool = MagicMock()
+        pool._accepting = True
+        pool._queue = asyncio.Queue(maxsize=1)
+        pool._queue.put_nowait(MagicMock())
+        h.worker_pool = pool
+        quota_mock = AsyncMock(return_value=True)
+        try:
+            with patch("bot.handlers.check_daily_quota", quota_mock):
+                await handle_text(update, context)
+            quota_mock.assert_not_awaited()
+            update.message.reply_text.assert_awaited_once_with(
+                "⚠️ 系統目前排隊請求過多，請稍後再試"
+            )
+        finally:
+            h.worker_pool = None

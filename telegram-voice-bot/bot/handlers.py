@@ -45,13 +45,19 @@ def _set_request_id(update: Update) -> str:
 
 def _pool_has_space(pool: WorkerPool) -> bool:
     """Return True when the worker pool is accepting tasks and below maxsize."""
-    q = getattr(pool, "_queue", None)
     accepting = getattr(pool, "_accepting", True)
-    if not accepting:
+    if accepting is False:
         return False
-    if q is not None and q.maxsize > 0 and q.qsize() >= q.maxsize:
-        return False
+    q = getattr(pool, "_queue", None)
+    if q is not None:
+        maxsize = getattr(q, "maxsize", None)
+        qsize_fn = getattr(q, "qsize", None)
+        if isinstance(maxsize, int) and maxsize > 0 and callable(qsize_fn):
+            current = qsize_fn()
+            if isinstance(current, int) and current >= maxsize:
+                return False
     return True
+
 
 
 def _check_auth_and_throttle(update: Update) -> tuple[int | None, str | None]:
@@ -160,7 +166,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
 
     try:
-        worker_pool.try_enqueue(
+        await worker_pool.enqueue(
             Task(
                 chat_id=chat_id,
                 reply_to_message_id=message_id,
@@ -223,7 +229,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
     msg = await _reply(update, "⏳ Transcribing...")
     try:
-        worker_pool.try_enqueue(
+        await worker_pool.enqueue(
             Task(
                 chat_id=chat_id,
                 reply_to_message_id=message_id,

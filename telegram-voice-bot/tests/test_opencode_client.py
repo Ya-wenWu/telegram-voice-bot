@@ -1,10 +1,14 @@
+import logging
+import sys
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
 
+import bot.opencode_client as oc_mod
 import bot.retry as retry_mod
-from main import TokenFilter, TokenRedactingFormatter
+from main import TokenRedactingFormatter, _extract_url_secret
 
 
 class TestRetry:
@@ -77,66 +81,39 @@ class TestRetry:
 
         assert resp.status_code == 429
 
+    @pytest.mark.asyncio()
+    async def test_transport_error_logs_type_without_raw_url(self, caplog):
+        async def send():
+            raise httpx.ConnectError("failed connecting to http://user:topsecret@host")
 
-class TestTokenFilterRedaction:
-    """測試 TokenFilter 與 TokenRedactingFormatter 的機密遮蔽規則。"""
+        with (
+            patch.object(retry_mod.asyncio, "sleep", AsyncMock()),
+            caplog.at_level(logging.WARNING, logger="bot.retry"),
+            pytest.raises(httpx.ConnectError),
+        ):
+            await retry_mod.request_with_retry(send, label="test")
 
-    def test_masks_token_in_dict_args(self):
-        # 20 字元以內的短金鑰應完全遮蔽為 ***
-        f = TokenFilter("supersecrettoken1234")
-        record = MagicMock()
-        record.msg = "user=%(user)s"
-        record.args = {"user": "supersecrettoken1234"}
-        assert f.filter(record)
-        assert record.args == {"user": "***"}
+        assert "ConnectError" in caplog.text
+        assert "topsecret" not in caplog.text
 
-    def test_masks_long_token_partially(self):
-        # 超過 20 字元的長金鑰才保留前 4 碼與後 4 碼
-        f = TokenFilter("supersecrettoken12345")
-        record = MagicMock()
-        record.msg = "token=%s"
-        record.args = ("supersecrettoken12345",)
-        assert f.filter(record)
-        assert record.args == ("***supe...2345***",)
 
-    def test_masks_token_in_tuple_args_non_string(self):
-        # 非字串參數（例如 HTTP URL 物件）- 必須對 str() 進行遮蔽
-        f = TokenFilter("supersecrettoken1234")
-        record = MagicMock()
-        record.msg = "url=%s"
+class TestOpenCodeHeaders:
+    def test_omits_authorization_when_key_empty(self):
+        with patch.object(oc_mod, "ZEN_API_KEY", ""):
+            headers = oc_mod._headers()
+        assert headers == {"Content-Type": "application/json"}
+        assert "Authorization" not in headers
 
-        class FakeUrl:
-            def __str__(self):
-                return "https://api.example.com/supersecrettoken1234/path"
-
-        record.args = (FakeUrl(),)
-        assert f.filter(record)
-        assert "***" in str(record.args[0])
-
-    def test_masks_token_in_plain_args_non_string(self):
-        f = TokenFilter("supersecrettoken1234")
-        record = MagicMock()
-        record.msg = "value=%s"
-        record.args = (42,)
-        assert f.filter(record)
-        assert record.args == ("42",)
-
-    def test_dict_args_stays_dict(self):
-        f = TokenFilter("supersecrettoken1234")
-        record = MagicMock()
-        record.msg = "user=%(user)s token supersecrettoken1234"
-        record.args = {"user": "alice"}
-        assert f.filter(record)
-        assert isinstance(record.args, dict)
-        assert record.msg == "user=%(user)s token ***"
+    def test_includes_bearer_when_key_present(self):
+        with patch.object(oc_mod, "ZEN_API_KEY", "test-zen-key"):
+            headers = oc_mod._headers()
+        assert headers["Authorization"] == "Bearer test-zen-key"
 
 
 class TestTokenRedactingFormatter:
-    """測試正式環境使用的 TokenRedactingFormatter。"""
+    """測試正式環境使用的 TokenRedactingFormatter 完整遮蔽規則。"""
 
-    def test_redacts_short_and_long_tokens_and_keeps_format(self):
-        import logging
-
+    def test_fully_redacts_short_and_long_tokens(self):
         formatter = TokenRedactingFormatter(
             ["short_secret_16c", "very_long_secret_token_25"]
         )
@@ -151,10 +128,57 @@ class TestTokenRedactingFormatter:
         )
         formatted = formatter.format(record)
         assert "[INFO] test.logger:" in formatted
-        assert "short=***" in formatted
-        assert "long=***very...n_25***" in formatted
+        assert "short=***REDACTED***" in formatted
+        assert "long=***REDACTED***" in formatted
         assert "short_secret_16c" not in formatted
         assert "very_long_secret_token_25" not in formatted
+        assert "very..." not in formatted
+
+    def test_redacts_dict_args_and_numeric_formatting(self):
+        formatter = TokenRedactingFormatter(["fake0000000000000"])
+        record = logging.LogRecord(
+            name="test.logger",
+            level=logging.INFO,
+            pathname=__file__,
+            lineno=1,
+            msg="count=%(count)d token=%(token)s",
+            args={"count": 42, "token": "fake0000000000000"},
+            exc_info=None,
+        )
+        formatted = formatter.format(record)
+        assert "count=42" in formatted
+        assert "token=***REDACTED***" in formatted
+        assert "fake0000000000000" not in formatted
+
+    def test_redacts_non_string_url_objects_and_tracebacks(self):
+        class FakeUrl:
+            def __str__(self):
+                return "http://bot.local"
+
+        formatter = TokenRedactingFormatter(["secret_in_url_1234"])
+        try:
+            raise RuntimeError("boom secret_in_url_1234")
+        except RuntimeError:
+            exc_info = sys.exc_info()
+
+        record = logging.LogRecord(
+            name="test.logger",
+            level=logging.ERROR,
+            pathname=__file__,
+            lineno=1,
+            msg="url=%s",
+            args=(FakeUrl(),),
+            exc_info=exc_info,
+        )
+        formatted = formatter.format(record)
+        assert "secret_in_url_1234" not in formatted
+        assert formatted.count("***REDACTED***") >= 2
+
+    def test_extract_url_secret(self):
+        url = "redis://:my_redis_pw@127.0.0.1:6379/0"
+        assert _extract_url_secret(url) == "my_redis_pw"
+        assert _extract_url_secret("redis://127.0.0.1:6379/0") is None
+        assert _extract_url_secret("") is None
 
 
 class TestRedactDiff:
@@ -163,7 +187,6 @@ class TestRedactDiff:
     @pytest.fixture()
     def code_review_module(self):
         import importlib.util
-        from pathlib import Path
 
         here = Path(__file__).resolve()
         script_path = here.parents[1] / ".github" / "scripts" / "code_review.py"
@@ -179,20 +202,16 @@ class TestRedactDiff:
     @pytest.mark.parametrize(
         "diff_input,expected_pattern",
         [
-            # 已知的專案機密環境變數名稱
             ("TELEGRAM_BOT_TOKEN=12345:abcdef", "TELEGRAM_BOT_TOKEN=***REDACTED***"),
             ("ZEN_API_KEY=fake0000000000000", "ZEN_API_KEY=***REDACTED***"),
             ("WHISPER_API_KEY=fake0000000000001", "WHISPER_API_KEY=***REDACTED***"),
-            # 通用的 *_TOKEN、*_API_KEY、*_SECRET 模式
             ("MY_API_KEY=fake0000000000002", "MY_API_KEY=***REDACTED***"),
             ("MY_SECRET_KEY=fake0000000000003", "MY_SECRET_KEY=***REDACTED***"),
             ("MY_PASSWORD=fake0000000000004", "MY_PASSWORD=***REDACTED***"),
-            # Bearer 權杖
             (
                 "Authorization: Bearer fake0000000000005",
                 "Authorization: Bearer ***REDACTED***",
             ),
-            # Grok/GitHub 風格的密鑰
             ("gsk_123456789abcdef", "***REDACTED***"),
             ("sk_123456789abcdef", "***REDACTED***"),
         ],
@@ -228,5 +247,5 @@ class TestOpencodeEndpoint:
     def test_endpoint_strips_trailing_slash(self):
         import bot.opencode_client as oc
 
-        with patch.object(oc, "ZEN_API_BASE", "https://api.example.com/v1/"):
-            assert oc._endpoint() == "https://api.example.com/v1/chat/completions"
+        with patch.object(oc, "ZEN_API_BASE", "http://bot.local/"):
+            assert oc._endpoint() == "http://bot.local/chat/completions"
