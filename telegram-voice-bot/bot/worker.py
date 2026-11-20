@@ -295,7 +295,7 @@ class WorkerPool:
         self._num_workers = max(1, num_workers)
         self._workers: list[asyncio.Task] = []
         self._running = False
-        self._accepting = False
+        self._accepting = True
         self._tts_timeout = tts_timeout
         self._ffmpeg_timeout = ffmpeg_timeout
         self._memory = memory or ConversationStore(
@@ -529,7 +529,7 @@ class WorkerPool:
                                 e,
                             )
 
-                if task.is_voice:
+                    if task.is_voice:
                         pos, scan_pos = queue_tts(full_text, pos, scan_pos)
 
                 if task.is_voice:

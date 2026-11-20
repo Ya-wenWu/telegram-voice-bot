@@ -10,6 +10,12 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
+_DEFAULT_LIMITS = httpx.Limits(
+    max_connections=20,
+    max_keepalive_connections=10,
+    keepalive_expiry=30.0,
+)
+
 _client: httpx.AsyncClient | None = None
 
 
@@ -17,7 +23,7 @@ def get_client(timeout: float = 120.0) -> httpx.AsyncClient:
     """Return a shared httpx.AsyncClient, creating it lazily on first use."""
     global _client
     if _client is None or _client.is_closed:
-        _client = httpx.AsyncClient(timeout=timeout)
+        _client = httpx.AsyncClient(timeout=timeout, limits=_DEFAULT_LIMITS)
     return _client
 
 
