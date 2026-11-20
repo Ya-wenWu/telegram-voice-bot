@@ -5,6 +5,7 @@ import shutil
 import sys
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 fcntl: Any
 msvcrt: Any
@@ -32,6 +33,7 @@ from bot.config import (
     BOT_QUEUE_MAXSIZE,
     BOT_WORKERS,
     CONCURRENT_UPDATES,
+    REDIS_URL,
     STATE_DIR,
     TELEGRAM_BOT_TOKEN,
     TMP_DIR,
@@ -47,32 +49,53 @@ from bot.redis_client import close_redis
 from bot.worker import WorkerPool
 
 LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: [req=%(req_id)s] %(message)s"
+MIN_SECRET_LEN = 6
+
+
+def _extract_url_secret(url: str | None) -> str | None:
+    """Return embedded password from a URL, if any."""
+    if not url:
+        return None
+    try:
+        return urlsplit(url).password or None
+    except ValueError:
+        return None
 
 
 class TokenRedactingFormatter(logging.Formatter):
-    """Formatting layer that redacts secrets from all log output."""
+    """Formatting layer that fully redacts secrets from all log output."""
 
     def __init__(self, tokens: list[str], *args, **kwargs):
         kwargs.setdefault("fmt", LOG_FORMAT)
         super().__init__(*args, **kwargs)
-        self._tokens = [t for t in tokens if t]
+        self._tokens = sorted(
+            {t for t in tokens if t and len(t) >= MIN_SECRET_LEN},
+            key=len,
+            reverse=True,
+        )
 
     def format(self, record: logging.LogRecord) -> str:
         if not hasattr(record, "req_id"):
             record.req_id = "-"
         msg = super().format(record)
         for token in self._tokens:
-            if token and token in msg:
-                replacement = (
-                    f"***{token[:4]}...{token[-4:]}***" if len(token) > 20 else "***"
-                )
-                msg = msg.replace(token, replacement)
+            if token in msg:
+                msg = msg.replace(token, "***REDACTED***")
         return msg
 
 
 _req_id_filter = RequestIdFilter()
 _secrets = [
-    s for s in (TELEGRAM_BOT_TOKEN, ZEN_API_KEY, WHISPER_API_KEY, TTS_API_KEY) if s
+    s
+    for s in (
+        TELEGRAM_BOT_TOKEN,
+        ZEN_API_KEY,
+        WHISPER_API_KEY,
+        TTS_API_KEY,
+        _extract_url_secret(REDIS_URL),
+        _extract_url_secret(WHISPER_URL),
+    )
+    if s
 ]
 _handler = logging.StreamHandler(sys.stdout)
 _handler.addFilter(_req_id_filter)
@@ -155,39 +178,6 @@ def _release_lock() -> None:
             _LOCK_FD = None
     except OSError:
         _LOCK_FD = None
-
-
-class TokenFilter(logging.Filter):
-    def __init__(self, token: str):
-        super().__init__()
-        self._token = token
-        self._replacement = (
-            f"***{token[:4]}...{token[-4:]}***" if len(token) > 20 else "***"
-        )
-
-    def _mask(self, value: object) -> object:
-        if isinstance(value, str):
-            return (
-                value.replace(self._token, self._replacement)
-                if self._token in value
-                else value
-            )
-        return (
-            str(value).replace(self._token, self._replacement)
-            if self._token in str(value)
-            else str(value)
-        )
-
-    def filter(self, record):
-        msg = record.msg if isinstance(record.msg, str) else str(record.msg)
-        if self._token in msg:
-            record.msg = msg.replace(self._token, self._replacement)
-        if record.args:
-            if isinstance(record.args, dict):
-                record.args = {k: self._mask(v) for k, v in record.args.items()}
-            else:
-                record.args = tuple(self._mask(a) for a in record.args)
-        return True
 
 
 NUM_WORKERS = BOT_WORKERS

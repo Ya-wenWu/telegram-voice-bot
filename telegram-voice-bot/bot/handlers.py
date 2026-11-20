@@ -43,6 +43,17 @@ def _set_request_id(update: Update) -> str:
     return req_id
 
 
+def _pool_has_space(pool: WorkerPool) -> bool:
+    """Return True when the worker pool is accepting tasks and below maxsize."""
+    q = getattr(pool, "_queue", None)
+    accepting = getattr(pool, "_accepting", True)
+    if not accepting:
+        return False
+    if q is not None and q.maxsize > 0 and q.qsize() >= q.maxsize:
+        return False
+    return True
+
+
 def _check_auth_and_throttle(update: Update) -> tuple[int | None, str | None]:
     """Shared authorization and throttling guard.
 
@@ -130,10 +141,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await _reply(update, "Message too long.")
         return
 
-    if not await check_daily_quota(user_id):
-        await _reply(update, "今日額度已用完，請明天再試。")
-        return
-
     chat_id = _get_chat_id(update)
     message_id = _get_message_id(update)
     if chat_id is None or message_id is None or worker_pool is None:
@@ -143,8 +150,17 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await _reply(update, "⚠️ 系統忙碌，請稍後再試")
         return
 
+    if not _pool_has_space(worker_pool):
+        logger.warning("Worker queue full; rejecting text request for chat %d", chat_id)
+        await _reply(update, "⚠️ 系統目前排隊請求過多，請稍後再試")
+        return
+
+    if not await check_daily_quota(user_id):
+        await _reply(update, "今日額度已用完，請明天再試。")
+        return
+
     try:
-        await worker_pool.enqueue(
+        worker_pool.try_enqueue(
             Task(
                 chat_id=chat_id,
                 reply_to_message_id=message_id,
@@ -167,20 +183,6 @@ def _check_voice_file(voice: Any | None) -> str | None:
     return None
 
 
-async def _validate_voice_request(update: Update) -> tuple[Any | None, str | None]:
-    """Validate auth, rate limit, voice attachment, size, and daily quota."""
-    user_id, reason = _check_auth_and_throttle(update)
-    if user_id is None:
-        return None, reason or "Unauthorized."
-    voice = _get_voice(update)
-    voice_error = _check_voice_file(voice)
-    if voice_error:
-        return None, voice_error
-    if not await check_daily_quota(user_id):
-        return None, "今日額度已用完，請明天再試。"
-    return voice, None
-
-
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Validate voice request and offload download + STT into WorkerPool.
 
@@ -188,9 +190,15 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     Head-of-Line Blocking on the polling loop when CONCURRENT_UPDATES=1.
     """
     req_id = _set_request_id(update)
-    voice, error_msg = await _validate_voice_request(update)
-    if error_msg:
-        await _reply(update, error_msg)
+    user_id, reason = _check_auth_and_throttle(update)
+    if user_id is None:
+        await _reply(update, reason or "Unauthorized.")
+        return
+
+    voice = _get_voice(update)
+    voice_error = _check_voice_file(voice)
+    if voice_error:
+        await _reply(update, voice_error)
         return
 
     chat_id = _get_chat_id(update)
@@ -202,9 +210,20 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await _reply(update, "⚠️ 系統忙碌，請稍後再試")
         return
 
+    if not _pool_has_space(worker_pool):
+        logger.warning(
+            "Worker queue full; rejecting voice request for chat %d", chat_id
+        )
+        await _reply(update, "⚠️ 系統目前排隊請求過多，請稍後再試")
+        return
+
+    if not await check_daily_quota(user_id):
+        await _reply(update, "今日額度已用完，請明天再試。")
+        return
+
     msg = await _reply(update, "⏳ Transcribing...")
     try:
-        await worker_pool.enqueue(
+        worker_pool.try_enqueue(
             Task(
                 chat_id=chat_id,
                 reply_to_message_id=message_id,
