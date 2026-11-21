@@ -12,8 +12,9 @@ permissions:
   security-events: write
 
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  # Only dedupe PR runs; every push to main keeps a completed CI record.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   security:
