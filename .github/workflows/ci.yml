@@ -12,8 +12,9 @@ permissions:
   security-events: write
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
-  # Only dedupe PR runs; every push to main keeps a completed CI record.
+  # PRs: one group per PR, newer pushes cancel older runs.
+  # Other events (push to main): unique group per run, so every commit keeps its own CI record.
+  group: ci-${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
