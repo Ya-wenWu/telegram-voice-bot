@@ -15,7 +15,8 @@ concurrency:
 jobs:
   review:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # Normally finishes in 1-4 min; cap at 15 so a hang can't hold the runner (default is 6h).
+    timeout-minutes: 15
     # Surface real failures: with continue-on-error the run looked green
     # while the opencode step was actually failing.
     continue-on-error: false
@@ -27,6 +28,9 @@ jobs:
 
       # pinned 2026-03-25，等同原 @latest；dev 分支無 github/action.yml
       - uses: anomalyco/opencode/github@77fc88c8ade8e5a620ebbe1197f3a572d29ae91a
+        # Composite action (install + run opencode); a hang here fails this step fast
+        # instead of consuming the whole job budget. Normal runs take 1-4 min.
+        timeout-minutes: 10
         env:
           OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
