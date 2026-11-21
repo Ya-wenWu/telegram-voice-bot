@@ -11,9 +11,14 @@ permissions:
   pull-requests: read
   security-events: write
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   security:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
         with:
@@ -43,6 +48,7 @@ jobs:
 
   dependency-review:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     if: github.event_name == 'pull_request'
     steps:
       - uses: actions/checkout@v7
@@ -53,6 +59,7 @@ jobs:
   web-build:
     needs: security
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v4
@@ -68,6 +75,7 @@ jobs:
   build:
     needs: security
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: telegram-voice-bot
