@@ -1,0 +1,41 @@
+[Unit]
+Description=Telegram Voice Bot (Low-Resource Production)
+After=network-online.target redis-server.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=tgbot
+Group=tgbot
+WorkingDirectory=/opt/telegram-voice-bot
+EnvironmentFile=/opt/telegram-voice-bot/.env
+Environment=STATE_DIR=/var/lib/telegram-voice-bot
+Environment=TMP_DIR=/tmp/telegram-voice-bot
+StateDirectory=telegram-voice-bot
+ExecStart=/opt/telegram-voice-bot/.venv/bin/python /opt/telegram-voice-bot/main.py
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=20
+
+# Memory budgets for 1 vCPU / 1.4 GiB hosts
+MemoryHigh=256M
+MemoryMax=384M
+
+# Delegate logs to systemd-journald
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=telegram-voice-bot
+
+# Sandboxing & least privilege
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=multi-user.target
