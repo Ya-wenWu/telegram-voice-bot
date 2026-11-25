@@ -2,7 +2,6 @@ import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-
 from bot.worker import Task, WorkerPool
 
 

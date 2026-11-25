@@ -24,10 +24,6 @@ try:
 except ImportError:  # pragma: no cover - POSIX compatibility
     msvcrt = None
 
-from telegram import Update
-from telegram.error import InvalidToken, TelegramError
-from telegram.ext import Application, CommandHandler, MessageHandler, filters
-
 from bot import handlers
 from bot.config import (
     ACTIVE_DEPLOYMENT_PROFILE,
@@ -63,6 +59,9 @@ from bot.observability import (
 )
 from bot.redis_client import close_redis
 from bot.worker import WorkerPool
+from telegram import Update
+from telegram.error import InvalidToken, TelegramError
+from telegram.ext import Application, CommandHandler, MessageHandler, filters
 
 LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: [req=%(req_id)s] %(message)s"
 MIN_SECRET_LEN = 6

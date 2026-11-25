@@ -3,8 +3,6 @@
 
 import asyncio
 import base64
-from contextlib import contextmanager
-from datetime import datetime, timezone
 import io
 import json
 import logging
@@ -15,8 +13,10 @@ import subprocess
 import sys
 import tempfile
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Iterator
 
 try:
     import fcntl
@@ -33,8 +33,8 @@ for _stream in (sys.stdin, sys.stdout, sys.stderr):
     if hasattr(_stream, "reconfigure"):
         try:
             _stream.reconfigure(encoding="utf-8", errors="replace")
-        except Exception:
-            pass
+        except (AttributeError, OSError):
+            logging.debug("Failed to reconfigure stdio stream encoding", exc_info=True)
 
 
 def _resolve_bot_repo() -> Path:
@@ -87,18 +87,18 @@ STATE_SCHEMA_VERSION = 2
 
 sys.path.insert(0, str(BOT_REPO))
 
-from bot.logging_context import RequestIdFilter, req_id_var  # noqa: E402
-from bot.memory import ConversationStore  # noqa: E402
-from bot.redis_client import (  # noqa: E402
+from bot.logging_context import RequestIdFilter, req_id_var
+from bot.memory import ConversationStore
+from bot.redis_client import (
     check_daily_quota,
     close_redis,
     create_ffmpeg_semaphore,
     create_tts_semaphore,
 )
-from bot.resource_profile import resolve_deployment_profile  # noqa: E402
+from bot.resource_profile import resolve_deployment_profile
 
 try:
-    from bot.tts_provider import get_tts_provider  # noqa: E402
+    from bot.tts_provider import get_tts_provider
 except ImportError:  # pragma: no cover - bare Python fallback
 
     def get_tts_provider(provider_name: str, voice_name: str):  # type: ignore[misc]
@@ -108,7 +108,7 @@ except ImportError:  # pragma: no cover - bare Python fallback
 
 
 try:
-    from bot.worker import (  # noqa: E402
+    from bot.worker import (
         TTS_MAX_CHARS,
         TTS_MAX_SENTENCES,
         _concat_mp3,
@@ -137,7 +137,7 @@ except ImportError:  # pragma: no cover - bare Python fallback
 
 
 try:
-    from main import LOG_FORMAT, TokenRedactingFormatter  # noqa: E402
+    from main import LOG_FORMAT, TokenRedactingFormatter
 except ImportError:  # pragma: no cover - bare Python fallback
     LOG_FORMAT = "%(asctime)s [%(levelname)s] [req=%(req_id)s] %(name)s: %(message)s"
 
@@ -251,9 +251,9 @@ def current_day_key(override: str | None = None) -> str:
     if ZoneInfo is not None:
         try:
             return datetime.now(ZoneInfo(tz_name)).strftime("%Y-%m-%d")
-        except Exception:
-            pass
-    return datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%d")
+        except Exception:  # noqa: BLE001
+            logging.debug("Invalid timezone %s, falling back to local UTC offset", tz_name)
+    return datetime.now(UTC).astimezone().strftime("%Y-%m-%d")
 
 
 @contextmanager
@@ -341,8 +341,8 @@ def load_state(day_key: str | None = None) -> dict:
                 if _enforce_daily_retention(state, today):
                     _write_state_atomic(state)
                 return state
-            except Exception:
-                pass
+            except Exception:  # noqa: BLE001
+                logging.debug("Failed to load state file %s; initializing fresh state", STATE_FILE, exc_info=True)
     return {
         "schema_version": STATE_SCHEMA_VERSION,
         "config": dict(DEFAULT_CONFIG),
@@ -398,7 +398,7 @@ def setup_capture_logger(
 
 def clean_text_for_tts(text: str) -> str:
     """Strip markdown formatting symbols so TTS reads replies naturally."""
-    cleaned = re.sub(r"```[\s\S]*?```", "（程式碼片段已顯示於畫面）", text)
+    cleaned = re.sub(r"```[\s\(\S\)]*?```", "（程式碼片段已顯示於畫面）", text)
     cleaned = re.sub(r"`([^`]+)`", r"\1", cleaned)
     cleaned = re.sub(r"\*\*([^*]+)\*\*", r"\1", cleaned)
     cleaned = re.sub(r"\*([^*]+)\*", r"\1", cleaned)
@@ -485,7 +485,7 @@ async def synthesize_voice(
             tts_ms,
             ACTIVE_PROFILE.tts_concurrency,
         )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         tts_ms = round((time.monotonic() - t_tts) * 1000, 1)
         tts_note = f"TTS 降級為純文字回覆（{type(exc).__name__}: {exc}）"
         log.warning(
@@ -505,7 +505,7 @@ async def synthesize_voice(
             async with ffmpeg_sem.acquire(timeout_sec=ffmpeg_timeout):
                 ff_remaining = max(0.5, ffmpeg_timeout - (time.monotonic() - t_ff))
                 combined = await _concat_mp3(parts, timeout=ff_remaining)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             log.warning(
                 "FFmpeg concat semaphore/execution failed (%s: %s); falling back to first TTS chunk",
                 type(exc).__name__,
@@ -525,6 +525,35 @@ async def synthesize_voice(
     return sentences, audio_b64, audio_bytes, tts_ms, ffmpeg_ms, tts_note
 
 
+def _read_git_status_sync() -> tuple[str, str, list[str]]:
+    git_branch = subprocess.check_output(
+        ["git", "-C", str(BOT_REPO), "rev-parse", "--abbrev-ref", "HEAD"],
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        stderr=subprocess.DEVNULL,
+    ).strip()
+    git_commit = subprocess.check_output(
+        ["git", "-C", str(BOT_REPO), "rev-parse", "--short", "HEAD"],
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        stderr=subprocess.DEVNULL,
+    ).strip()
+    git_log = (
+        subprocess.check_output(
+            ["git", "-C", str(BOT_REPO), "log", "main..HEAD", "--oneline"],
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            stderr=subprocess.DEVNULL,
+        )
+        .strip()
+        .splitlines()
+    )
+    return git_branch, git_commit, git_log
+
+
 async def cmd_status() -> dict:
     state = load_state()
     git_branch = "packaged-local"
@@ -532,33 +561,9 @@ async def cmd_status() -> dict:
     git_log: list[str] = []
     if (BOT_REPO / ".git").exists():
         try:
-            git_branch = subprocess.check_output(
-                ["git", "-C", str(BOT_REPO), "rev-parse", "--abbrev-ref", "HEAD"],
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                stderr=subprocess.DEVNULL,
-            ).strip()
-            git_commit = subprocess.check_output(
-                ["git", "-C", str(BOT_REPO), "rev-parse", "--short", "HEAD"],
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                stderr=subprocess.DEVNULL,
-            ).strip()
-            git_log = (
-                subprocess.check_output(
-                    ["git", "-C", str(BOT_REPO), "log", "main..HEAD", "--oneline"],
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
-                    stderr=subprocess.DEVNULL,
-                )
-                .strip()
-                .splitlines()
-            )
-        except Exception:
-            pass
+            git_branch, git_commit, git_log = await asyncio.to_thread(_read_git_status_sync)
+        except Exception:  # noqa: BLE001
+            logging.debug("Failed to read git metadata from %s", BOT_REPO, exc_info=True)
 
     t0 = time.monotonic()
     quota_ok = await check_daily_quota(
@@ -723,7 +728,7 @@ def cmd_sync_history(payload: dict) -> dict:
                 "reqId": str(item.get("reqId") or "restored"),
                 "elapsedMs": float(item.get("elapsedMs") or 0),
                 "dayKey": day_key,
-                "createdAt": str(item.get("createdAt") or datetime.now(timezone.utc).isoformat()),
+                "createdAt": str(item.get("createdAt") or datetime.now(UTC).isoformat()),
             }
         )
 
@@ -757,7 +762,7 @@ async def cmd_check_access(payload: dict) -> dict:
 
     state["req_counter"] += 1
     req_id = str(state["req_counter"])
-    demo_secret = ":".join(["123456789", "WEB_SESSION_MASK_DEMO"])
+    demo_secret = ":".join(["123456789", "WEB_SESSION_MASK_DEMO"])  # noqa: FLY002
     log, buf = setup_capture_logger(req_id, [demo_secret])
 
     log.info(
@@ -819,7 +824,7 @@ async def cmd_prepare(payload: dict) -> dict:
         state["req_counter"] += 1
         req_id = str(state["req_counter"])
 
-    demo_secret = ":".join(["123456789", "WEB_SESSION_MASK_DEMO"])
+    demo_secret = ":".join(["123456789", "WEB_SESSION_MASK_DEMO"])  # noqa: FLY002
     log, buf = setup_capture_logger(req_id, [demo_secret])
     t_start = time.monotonic()
 
@@ -1009,7 +1014,7 @@ async def cmd_finalize(payload: dict) -> dict:
     llm_ms = float(payload.get("llmMs") or 0.0)
     stt_ms = float(payload.get("sttMs") or 0.0)
 
-    demo_secret = ":".join(["123456789", "WEB_SESSION_MASK_DEMO"])
+    demo_secret = ":".join(["123456789", "WEB_SESSION_MASK_DEMO"])  # noqa: FLY002
     log, buf = setup_capture_logger(req_id, [demo_secret])
     t_start = time.monotonic()
 
@@ -1051,7 +1056,7 @@ async def cmd_finalize(payload: dict) -> dict:
             "llmMs": round(llm_ms, 1),
             "elapsedMs": round(stt_ms + llm_ms, 1),
             "dayKey": today_key,
-            "createdAt": datetime.now(timezone.utc).isoformat(),
+            "createdAt": datetime.now(UTC).isoformat(),
         }
     )
     evicted_count = max(0, len(existing_turns) - MAX_DAILY_ROUND_TRIPS)
@@ -1111,10 +1116,10 @@ async def cmd_finalize(payload: dict) -> dict:
 def cmd_update_config(payload: dict) -> dict:
     state = load_state()
     cfg = state["config"]
-    for key in DEFAULT_CONFIG:
+    for key, default_val in DEFAULT_CONFIG.items():
         if key in payload:
             val = payload[key]
-            if isinstance(DEFAULT_CONFIG[key], int):
+            if isinstance(default_val, int):
                 try:
                     num = int(val)
                     cfg[key] = max(
@@ -1148,6 +1153,7 @@ def cmd_run_tests() -> dict:
     }
     pytest_res = subprocess.run(
         ["python", "-m", "pytest", "-q", "--cov=bot", "--cov=main"],
+        check=False,
         cwd=str(BOT_REPO),
         env=sub_env,
         shell=False,
@@ -1159,6 +1165,7 @@ def cmd_run_tests() -> dict:
     )
     ruff_res = subprocess.run(
         ["python", "-m", "ruff", "check", "."],
+        check=False,
         cwd=str(BOT_REPO),
         env=sub_env,
         shell=False,
@@ -1170,6 +1177,7 @@ def cmd_run_tests() -> dict:
     )
     mypy_res = subprocess.run(
         ["python", "-m", "mypy", "bot/", "main.py", "--ignore-missing-imports"],
+        check=False,
         cwd=str(BOT_REPO),
         env=sub_env,
         shell=False,

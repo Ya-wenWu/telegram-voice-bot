@@ -1,15 +1,16 @@
 """Tests for adaptive 1C/1G resource detection and high-concurrency multi-bot scheduling."""
 
-import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
-
 from bot import redis_client
 from bot.memory import ConversationStore
 from bot.multi_bot import load_bot_registry
-from bot.resource_profile import CONSTRAINED_RAM_THRESHOLD_MB, resolve_deployment_profile
+from bot.resource_profile import (
+    CONSTRAINED_RAM_THRESHOLD_MB,
+    resolve_deployment_profile,
+)
 from bot.worker import Task, WorkerPool
 
 

@@ -342,7 +342,7 @@ class MultiBotManager:
                         await app.updater.stop()
                     await app.stop()
                     await app.shutdown()
-                except Exception:  # noqa: BLE001
+                except Exception:
                     logger.debug("Error shutting down bot app", exc_info=True)
             if self._obs_server is not None:
                 await self._obs_server.stop()

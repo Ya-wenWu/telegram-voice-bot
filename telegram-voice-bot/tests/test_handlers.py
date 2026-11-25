@@ -3,9 +3,8 @@
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
-
 import bot.handlers as h
+import pytest
 from bot.handlers import handle_text, handle_voice, reset_memory, start
 
 

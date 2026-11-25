@@ -8,11 +8,10 @@ import logging
 import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
-
 import bot.handlers as handlers_mod
 import bot.redis_client as redis_mod
 import bot.worker as worker_mod
+import pytest
 from bot.logging_context import RequestIdFilter, req_id_var
 from bot.observability import (
     JsonTokenRedactingFormatter,
@@ -23,7 +22,6 @@ from bot.observability import (
     start_span,
 )
 from bot.worker import WorkerPool
-
 
 SERVER_DOMAIN:int = "127.0.0.1"
 

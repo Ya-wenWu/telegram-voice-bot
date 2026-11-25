@@ -1,8 +1,7 @@
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
-
 import bot.http_client as http_client_mod
+import pytest
 from bot.whisper import MAX_AUDIO_BYTES, _endpoint, _transcribe_chunk, transcribe
 
 

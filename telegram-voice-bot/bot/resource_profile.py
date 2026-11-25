@@ -122,7 +122,7 @@ def _read_windows_mem_mb() -> tuple[int, int] | None:
             total_mb = max(1, int(stat.ullTotalPhys // (1024 * 1024)))
             avail_mb = max(1, int(stat.ullAvailPhys // (1024 * 1024)))
             return total_mb, avail_mb
-    except Exception:
+    except Exception:  # noqa: BLE001
         return None
     return None
 

@@ -1,8 +1,7 @@
 from unittest.mock import AsyncMock, patch
 
-import pytest
-
 import bot.redis_client as rc
+import pytest
 
 
 @pytest.fixture(autouse=True)
