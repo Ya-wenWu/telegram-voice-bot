@@ -18,7 +18,7 @@ import { sendEmailWithAttachments, type EmailAttachment } from '../services/gmai
 import { getAccessToken, googleSignIn, initAuth, logout } from '../services/googleAuth';
 
 interface DeliverableFile {
-  id: 'complete' | 'patch' | 'zip';
+  id: 'complete' | 'patch';
   filename: string;
   url: string;
   mimeType: string;
@@ -33,50 +33,38 @@ const DELIVERABLES: DeliverableFile[] = [
     url: '/api/download/complete-zip',
     mimeType: 'application/zip',
     description:
-      'Complete runnable project packaged in one folder (web-voice-bot-complete/): React Web Voice Bot UI, Express + Gemini STT/AI backend, bot_bridge.py, Python bot core (136 tests), and local run guide.',
-    sizeLabel: '156 KB',
+      '即時打包之完整專案原始碼（含前端 React/Vite、後端 Express/BotGuard/ISO 27036 Compliance、Python Telegram Bot、Redis 分散式信號量、啟動腳本與測試；自動排除 .env／node_modules／快取，解壓即可推送上 GitHub）。',
+    sizeLabel: '即時動態打包',
   },
   {
     id: 'patch',
-    filename: 'telegram-voice-bot-fixes.patch',
-    url: '/telegram-voice-bot-fixes.patch',
+    filename: 'rebased-on-c6a4016.patch',
+    url: '/rebased-on-c6a4016.patch',
     mimeType: 'text/plain',
     description:
-      'Git format-patch with all commits (Issue #24-#27 specs + Windows 11 compatibility + security hardening), ready for `git am`.',
-    sizeLabel: '109 KB',
-  },
-  {
-    id: 'zip',
-    filename: 'telegram-voice-bot-fixed.zip',
-    url: '/telegram-voice-bot-fixed.zip',
-    mimeType: 'application/zip',
-    description:
-      'Python telegram-voice-bot repository core only (Windows 11 + Linux compatible, 136 passing tests, refreshed docs).',
-    sizeLabel: '60 KB',
+      '基於 GitHub fix/staff-hardening (c6a4016) 整理的 3 個乾淨 Rebase Commit，可直接執行 `git am` 零衝突套用。',
+    sizeLabel: '101 KB',
   },
 ];
 
 const DEFAULT_RECIPIENT = (import.meta.env.VITE_DEFAULT_RECIPIENT_EMAIL ?? '').trim();
 const DEFAULT_SUBJECT =
-  '[telegram-voice-bot] Issue #24-#27 specs, runtime hardening & git patch (fix/runtime-hardening-and-docs)';
+  '[telegram-voice-bot] Rebased guardrails & 5-layer prompt injection defense on c6a4016';
 const DEFAULT_BODY = `Hi,
 
-Attached are the verified fixes and Issue #24/#25/#26/#27 implementations for Ya-wenWu/telegram-voice-bot on branch fix/runtime-hardening-and-docs:
+Attached are the latest audited full project ZIP and clean rebased git patch built on top of Ya-wenWu/telegram-voice-bot (fix/staff-hardening @ c6a4016):
 
-- Commit f847d91: fix: harden runtime startup, secret redaction, voice streaming, and worker bounds
-- Commit 2688dd1: docs: record runtime verification results and Issue #24 deployment guidance
-- Commit c1a5e35: feat: implement Issue #24/#25/#26 specs (non-blocking STT, req_id, TTSProvider, memory, systemd)
-- Verification: pytest 136 passed (81% coverage), ruff check/format clean, mypy clean, zero token leak on stderr.
+- Self-hoster guardrails: masked GEMINI_API_KEY launcher prompts, npm run doctor, unified Gitleaks + fallback .githooks/pre-commit
+- 5-layer Prompt Injection defense (Web + Python core) & live preflight diagnostics
+- Hardened AI Code Review workflow against fork PRs and prompt injection
+- Verification: pytest 148 passed (90% coverage), ruff/mypy/tsc/vite build clean, zero secret leaks.
 
-To apply the patch locally and push the Pull Request branch:
+To apply the 3 rebased commits directly onto fix/staff-hardening:
 
-  git clone https://github.com/Ya-wenWu/telegram-voice-bot.git
-  cd telegram-voice-bot
-  git checkout -b fix/runtime-hardening-and-docs
-  git am < telegram-voice-bot-fixes.patch
-  git push -u origin fix/runtime-hardening-and-docs
-
-Then open a Pull Request from fix/runtime-hardening-and-docs into main on GitHub.
+  git checkout fix/staff-hardening
+  git pull origin fix/staff-hardening
+  git am rebased-on-c6a4016.patch
+  git push origin fix/staff-hardening
 `;
 
 export function EmailDeliveryPanel() {
@@ -87,7 +75,7 @@ export function EmailDeliveryPanel() {
   const [recipient, setRecipient] = useState(DEFAULT_RECIPIENT);
   const [subject, setSubject] = useState(DEFAULT_SUBJECT);
   const [bodyText, setBodyText] = useState(DEFAULT_BODY);
-  const [selectedIds, setSelectedIds] = useState<Set<'complete' | 'patch' | 'zip'>>(
+  const [selectedIds, setSelectedIds] = useState<Set<'complete' | 'patch'>>(
     () => new Set(['complete', 'patch'])
   );
 
@@ -115,7 +103,7 @@ export function EmailDeliveryPanel() {
 
   const selectedFiles = DELIVERABLES.filter((d) => selectedIds.has(d.id));
 
-  const toggleAttachment = (id: 'complete' | 'patch' | 'zip') => {
+  const toggleAttachment = (id: 'complete' | 'patch') => {
     setSelectedIds((prev) => {
       const next = new Set(prev);
       if (next.has(id)) {
@@ -149,6 +137,10 @@ export function EmailDeliveryPanel() {
       const res = await fetch(file.url, { cache: 'no-store' });
       if (!res.ok) {
         throw new Error(`無法下載 ${file.filename}（HTTP ${res.status}）`);
+      }
+      const contentType = (res.headers.get('content-type') || '').toLowerCase();
+      if (file.id === 'complete' && contentType.includes('text/html')) {
+        throw new Error('伺服器回傳了 HTML 而非 ZIP 壓縮檔，請重新整理後再試。');
       }
       const blob = await res.blob();
       const blobUrl = URL.createObjectURL(blob);
@@ -378,13 +370,12 @@ export function EmailDeliveryPanel() {
                           <span>{downloadingId === file.id ? '下載中...' : 'Direct download'}</span>
                         </button>
                         <a
-                          href={file.id === 'complete' ? '/web-voice-bot-complete.zip' : file.url}
-                          target="_blank"
-                          rel="noopener noreferrer"
+                          href={file.url}
+                          download={file.filename}
                           className="inline-flex items-center gap-1 text-xs text-slate-500 hover:text-slate-800 hover:underline"
                         >
                           <ExternalLink className="w-3 h-3" aria-hidden="true" />
-                          <span>Open tab</span>
+                          <span>Open link</span>
                         </a>
                       </div>
                     </div>
@@ -394,11 +385,12 @@ export function EmailDeliveryPanel() {
             </div>
 
             <div className="text-xs text-slate-500 space-y-1.5">
-              <p className="font-medium text-slate-700">Apply patch locally & open PR</p>
+              <p className="font-medium text-slate-700">Apply rebased patch onto fix/staff-hardening</p>
               <pre className="p-3 bg-slate-50 border border-slate-200 rounded-md font-mono text-[11px] text-slate-700 overflow-x-auto leading-relaxed">
-{`git checkout -b fix/runtime-hardening-and-docs
-git am < telegram-voice-bot-fixes.patch
-git push -u origin fix/runtime-hardening-and-docs`}
+{`git checkout fix/staff-hardening
+git pull origin fix/staff-hardening
+git am rebased-on-c6a4016.patch
+git push origin fix/staff-hardening`}
               </pre>
             </div>
           </div>

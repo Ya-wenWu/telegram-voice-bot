@@ -34,6 +34,19 @@ export default defineConfig(() => {
       },
     },
     server: {
+      // Allow AI Studio / Cloud Run preview hosts without disabling Vite host-header protection locally
+      allowedHosts: [
+        '.run.app',
+        ...(process.env.APP_URL
+          ? (() => {
+              try {
+                return [new URL(process.env.APP_URL).hostname];
+              } catch {
+                return [];
+              }
+            })()
+          : []),
+      ],
       // HMR is disabled in AI Studio via DISABLE_HMR env var.
       // Do not modify—file watching is disabled to prevent flickering during agent edits.
       hmr: process.env.DISABLE_HMR !== 'true',

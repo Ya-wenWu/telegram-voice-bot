@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 
 import httpx
 
@@ -17,6 +18,31 @@ from bot.tts_provider import get_tts_provider
 logger = logging.getLogger(__name__)
 
 MAX_TEXT_LEN = 8000
+
+_INVISIBLE_CHARS_RE = re.compile(r"[\u200b-\u200f\u202a-\u202e\u2060-\u206f\ufeff]")
+_PROMPT_INJECTION_RE = re.compile(
+    r"(?i)"
+    r"\b(?:ignore|disregard|forget|override|bypass)\s+(?:all\s+|any\s+)?"
+    r"(?:previous|prior|above|earlier|original|system|safety)\s+"
+    r"(?:instructions?|prompts?|rules?|directives?|constraints?)\b"
+    r"|\b(?:reveal|show|print|dump|leak|output|repeat)\s+(?:me\s+)?(?:your\s+|the\s+)?"
+    r"(?:exact\s+|full\s+|original\s+|hidden\s+)?(?:system\s+prompt|system\s+instructions?)\b"
+    r"|(?:<\|im_start\|>|<\|system\|>|<<SYS>>|\[SYSTEM(?:\s+OVERRIDE|\s+PROMPT)?\])"
+    r"|(?:忽略|無視|无视|忘記|忘记|覆蓋|覆盖)(?:以上|先前|之前|所有|全部)(?:的)?(?:所有|全部)?(?:系統|系统)?(?:指令|規則|规则|設定|设定|提示詞|提示词|限制)"
+    r"|(?:進入|进入|開啟|开启)(?:開發者模式|开发者模式|越獄模式|越狱模式|無限制模式|无限制模式)"
+    r"|(?:顯示|显示|輸出|输出|告訴我|告诉我|印出|打印|揭露)(?:你|系統|系统)?(?:的)?(?:完整|原始)?(?:系統提示詞|系统提示词|系統指令|系统指令|system\s*prompt)"
+)
+
+
+def sanitize_user_text(text: str, max_len: int = MAX_TEXT_LEN) -> str:
+    """Strip invisible zero-width/bidi smuggling characters and enforce length cap."""
+    cleaned = _INVISIBLE_CHARS_RE.sub("", text or "").strip()
+    return cleaned[:max_len]
+
+
+def is_prompt_injection(text: str) -> bool:
+    """Detect high-confidence prompt-injection or system-prompt extraction attempts."""
+    return bool(_PROMPT_INJECTION_RE.search(sanitize_user_text(text)))
 
 
 def _endpoint() -> str:
@@ -37,7 +63,7 @@ def _messages(
     msgs: list[dict[str, str]] = [{"role": "system", "content": build_system_prompt()}]
     if history:
         msgs.extend(history)
-    msgs.append({"role": "user", "content": (text or "")[:MAX_TEXT_LEN]})
+    msgs.append({"role": "user", "content": sanitize_user_text(text)})
     return msgs
 
 

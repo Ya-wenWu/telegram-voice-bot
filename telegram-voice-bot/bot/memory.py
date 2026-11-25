@@ -13,8 +13,11 @@ class _ChatHistory:
     updated_at: float = field(default_factory=time.monotonic)
 
 
+ChatKey = int | str
+
+
 class ConversationStore:
-    """LRU + TTL bounded per-chat conversation history."""
+    """LRU + TTL bounded per-chat conversation history (supports single and multi-bot keys)."""
 
     def __init__(
         self,
@@ -26,7 +29,7 @@ class ConversationStore:
         self._max_turns = max(0, max_turns)
         self._max_chats = max(1, max_chats)
         self._ttl_sec = max(1.0, ttl_sec)
-        self._chats: OrderedDict[int, _ChatHistory] = OrderedDict()
+        self._chats: OrderedDict[ChatKey, _ChatHistory] = OrderedDict()
 
     def configure(
         self, *, max_turns: int | None = None, ttl_sec: float | None = None
@@ -52,7 +55,7 @@ class ConversationStore:
         for cid in expired:
             del self._chats[cid]
 
-    def get_history(self, chat_id: int) -> list[dict[str, str]]:
+    def get_history(self, chat_id: ChatKey) -> list[dict[str, str]]:
         if self._max_turns <= 0:
             return []
         now = time.monotonic()
@@ -63,7 +66,7 @@ class ConversationStore:
         self._chats.move_to_end(chat_id)
         return list(entry.messages)
 
-    def append_turn(self, chat_id: int, user_text: str, assistant_text: str) -> None:
+    def append_turn(self, chat_id: ChatKey, user_text: str, assistant_text: str) -> None:
         if self._max_turns <= 0:
             return
         now = time.monotonic()
@@ -89,7 +92,7 @@ class ConversationStore:
         while len(self._chats) > self._max_chats:
             self._chats.popitem(last=False)
 
-    def clear(self, chat_id: int) -> bool:
+    def clear(self, chat_id: ChatKey) -> bool:
         return self._chats.pop(chat_id, None) is not None
 
     def clear_all(self) -> None:

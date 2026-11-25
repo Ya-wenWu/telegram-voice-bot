@@ -1,4 +1,5 @@
 import argparse
+import asyncio
 import logging
 import os
 import shutil
@@ -29,10 +30,16 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters
 
 from bot import handlers
 from bot.config import (
+    ACTIVE_DEPLOYMENT_PROFILE,
     ALLOWED_USER_IDS,
     BOT_QUEUE_MAXSIZE,
     BOT_WORKERS,
     CONCURRENT_UPDATES,
+    MAX_BOT_INSTANCES,
+    METRICS_HOST,
+    METRICS_PORT,
+    OTEL_ENABLED,
+    OTEL_SERVICE_NAME,
     REDIS_URL,
     STATE_DIR,
     TELEGRAM_BOT_TOKEN,
@@ -42,9 +49,18 @@ from bot.config import (
     WHISPER_URL,
     ZEN_API_KEY,
 )
-from bot.handlers import handle_text, handle_voice, reset_memory, start
+from bot.config import (
+    LOG_FORMAT as CONFIG_LOG_FORMAT,
+)
+from bot.handlers import handle_text, handle_voice, reset_memory, start, verify_human
 from bot.http_client import close_client
 from bot.logging_context import RequestIdFilter
+from bot.multi_bot import MultiBotManager, load_bot_registry
+from bot.observability import (
+    JsonTokenRedactingFormatter,
+    ObservabilityServer,
+    configure_otel_tracing,
+)
 from bot.redis_client import close_redis
 from bot.worker import WorkerPool
 
@@ -85,10 +101,12 @@ class TokenRedactingFormatter(logging.Formatter):
 
 
 _req_id_filter = RequestIdFilter()
+_configured_bots = load_bot_registry(ACTIVE_DEPLOYMENT_PROFILE)
 _secrets = [
     s
     for s in (
         TELEGRAM_BOT_TOKEN,
+        *(b.token for b in _configured_bots),
         ZEN_API_KEY,
         WHISPER_API_KEY,
         TTS_API_KEY,
@@ -99,10 +117,13 @@ _secrets = [
 ]
 _handler = logging.StreamHandler(sys.stdout)
 _handler.addFilter(_req_id_filter)
-if _secrets:
-    _handler.setFormatter(TokenRedactingFormatter(_secrets, fmt=LOG_FORMAT))
+if CONFIG_LOG_FORMAT == "text":
+    if _secrets:
+        _handler.setFormatter(TokenRedactingFormatter(_secrets, fmt=LOG_FORMAT))
+    else:
+        _handler.setFormatter(logging.Formatter(LOG_FORMAT))
 else:
-    _handler.setFormatter(logging.Formatter(LOG_FORMAT))
+    _handler.setFormatter(JsonTokenRedactingFormatter(_secrets))
 
 _root = logging.getLogger()
 _root.setLevel(logging.INFO)
@@ -181,15 +202,35 @@ def _release_lock() -> None:
 
 
 NUM_WORKERS = BOT_WORKERS
+_observability_server: ObservabilityServer | None = None
+
+
+def check_readiness() -> tuple[bool, dict[str, Any]]:
+    """Aggregate readiness checks for /ready probes."""
+    pool = handlers.worker_pool
+    if pool is None:
+        return False, {"worker_pool": "uninitialized"}
+    pool_ready, details = pool.is_ready()
+    return pool_ready, {"worker_pool": details}
 
 
 async def post_init(application: Application) -> None:
+    global _observability_server
+    configure_otel_tracing(OTEL_SERVICE_NAME, OTEL_ENABLED)
     cleaned = _cleanup_stale_tmp_files()
     if cleaned:
         logger.info("Cleaned %d stale temp item(s) in %s", cleaned, TMP_DIR)
     pool = WorkerPool(num_workers=NUM_WORKERS, max_queue_size=BOT_QUEUE_MAXSIZE)
     await pool.start()
     handlers.worker_pool = pool
+    if METRICS_PORT > 0:
+        _observability_server = ObservabilityServer(
+            host=METRICS_HOST,
+            port=METRICS_PORT,
+            readiness_check=check_readiness,
+            service_name=OTEL_SERVICE_NAME,
+        )
+        await _observability_server.start()
     logger.info(
         "Worker pool assigned (workers=%d, concurrent_updates=%d, queue_maxsize=%d)",
         NUM_WORKERS,
@@ -199,6 +240,10 @@ async def post_init(application: Application) -> None:
 
 
 async def post_stop(application: Application) -> None:
+    global _observability_server
+    if _observability_server is not None:
+        await _observability_server.stop()
+        _observability_server = None
     if handlers.worker_pool is not None:
         await handlers.worker_pool.stop(drain_timeout=DRAIN_TIMEOUT_SEC)
         logger.info("Worker pool stopped")
@@ -212,8 +257,9 @@ def run_preflight_check() -> int:
     """Validate runtime configuration and system dependencies without polling."""
     errors: list[str] = []
     warnings: list[str] = []
+    bots = load_bot_registry(ACTIVE_DEPLOYMENT_PROFILE)
 
-    if not TELEGRAM_BOT_TOKEN or TELEGRAM_BOT_TOKEN == "your_token_here":
+    if not bots and (not TELEGRAM_BOT_TOKEN or TELEGRAM_BOT_TOKEN == "your_token_here"):
         errors.append("TELEGRAM_BOT_TOKEN is missing or still set to the placeholder.")
     if not ZEN_API_KEY:
         errors.append("ZEN_API_KEY is missing; LLM replies cannot be generated.")
@@ -243,7 +289,12 @@ def run_preflight_check() -> int:
         return 1
 
     logger.info(
-        "Preflight check PASSED (workers=%d, concurrent=%d, queue_maxsize=%d).",
+        "Preflight check PASSED (profile=%s, ram_mb=%d, cpu=%d, bots=%d/%d, workers=%d, concurrent=%d, queue_maxsize=%d).",
+        ACTIVE_DEPLOYMENT_PROFILE.mode,
+        ACTIVE_DEPLOYMENT_PROFILE.resources.effective_available_ram_mb,
+        ACTIVE_DEPLOYMENT_PROFILE.resources.effective_cpu_cores,
+        len(bots),
+        MAX_BOT_INSTANCES,
         NUM_WORKERS,
         CONCURRENT_UPDATES,
         BOT_QUEUE_MAXSIZE,
@@ -264,7 +315,10 @@ def main(argv: list[str] | None = None) -> None:
 
     _acquire_lock()
     try:
-        if not TELEGRAM_BOT_TOKEN or TELEGRAM_BOT_TOKEN == "your_token_here":
+        bots = load_bot_registry(ACTIVE_DEPLOYMENT_PROFILE)
+        if not bots and (
+            not TELEGRAM_BOT_TOKEN or TELEGRAM_BOT_TOKEN == "your_token_here"
+        ):
             logger.error("TELEGRAM_BOT_TOKEN is not set! Copy .env.example to .env.")
             sys.exit(1)
 
@@ -284,9 +338,41 @@ def main(argv: list[str] | None = None) -> None:
                 "will fail to transcribe (text chat still works)."
             )
 
+        logger.info(
+            "Adaptive deployment profile=%s (%s, effective_ram=%dMB, effective_cpu=%d, active_bots=%d/%d)",
+            ACTIVE_DEPLOYMENT_PROFILE.mode,
+            ACTIVE_DEPLOYMENT_PROFILE.tier,
+            ACTIVE_DEPLOYMENT_PROFILE.resources.effective_available_ram_mb,
+            ACTIVE_DEPLOYMENT_PROFILE.resources.effective_cpu_cores,
+            len(bots) or 1,
+            MAX_BOT_INSTANCES,
+        )
+
+        # Multi-bot high-concurrency path (only reachable when > 1 GB RAM and >= 2 bots configured)
+        if (
+            ACTIVE_DEPLOYMENT_PROFILE.mode == "high_concurrency"
+            and len(bots) >= 2
+        ):
+            manager = MultiBotManager(
+                bots,
+                profile=ACTIVE_DEPLOYMENT_PROFILE,
+                num_workers=NUM_WORKERS,
+                max_queue_size=BOT_QUEUE_MAXSIZE,
+                concurrent_updates=CONCURRENT_UPDATES,
+            )
+            logger.info(
+                "Starting MultiBotManager for %d bots (%s) sharing %d high-concurrency workers...",
+                len(bots),
+                ", ".join(manager.bot_ids),
+                NUM_WORKERS,
+            )
+            asyncio.run(manager.run_polling(drain_timeout=DRAIN_TIMEOUT_SEC))
+            return
+
+        single_token = bots[0].token if bots else TELEGRAM_BOT_TOKEN
         app = (
             Application.builder()
-            .token(TELEGRAM_BOT_TOKEN)
+            .token(single_token)
             .post_init(post_init)
             .post_stop(post_stop)
             .concurrent_updates(CONCURRENT_UPDATES)
@@ -294,11 +380,13 @@ def main(argv: list[str] | None = None) -> None:
         )
         app.add_handler(CommandHandler("start", start))
         app.add_handler(CommandHandler("reset", reset_memory))
+        app.add_handler(CommandHandler("verify", verify_human))
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
         app.add_handler(MessageHandler(filters.VOICE & ~filters.COMMAND, handle_voice))
 
         logger.info(
-            "Starting bot polling (workers=%d, concurrent=%d)...",
+            "Starting single-bot polling (profile=%s, workers=%d, concurrent=%d)...",
+            ACTIVE_DEPLOYMENT_PROFILE.mode,
             NUM_WORKERS,
             CONCURRENT_UPDATES,
         )

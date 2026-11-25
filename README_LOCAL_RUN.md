@@ -78,20 +78,3 @@ web-voice-bot-complete/
 * **Windows**：`Get-FileHash .\DeveloperSetting\* -Algorithm SHA256 | Format-List`
 * **Linux**：`sha256sum ./DeveloperSetting/*.sh`
 * **macOS**：`shasum -a 256 ./DeveloperSetting/*.sh`
-
-# 自動ruff check format
-## 1. 確保虛擬環境已安裝 ruff
-```
-.\.venv-win\Scripts\pip.exe install ruff -q
-```
-
-## 2. 執行語法與風格檢查（對應 CI 的 ruff check）
-```
-.\.venv-win\Scripts\ruff.exe check telegram-voice-bot
-```
-
-## 3. 自動修正排版並驗證（對應 CI 的 ruff format --check）
-```
-.\.venv-win\Scripts\ruff.exe format .
-.\.venv-win\Scripts\ruff.exe format --check .
-```

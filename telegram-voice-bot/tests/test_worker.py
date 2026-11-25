@@ -334,3 +334,128 @@ async def test_worker_handles_voice_transcription_failure(mock_bot):
         )
 
     status_msg.edit_text.assert_awaited_once_with("❌ 語音轉錄失敗，請稍後再試。")
+
+
+@pytest.mark.asyncio()
+async def test_priority_queue_prioritizes_text_over_voice(mock_bot):
+    """Fast text tasks should overtake queued voice tasks to prevent HoL blocking."""
+    pool = WorkerPool(num_workers=1, max_queue_size=10)
+    order: list[str] = []
+
+    async def record_process(task: Task) -> None:
+        order.append(task.text)
+
+    pool._process = record_process
+
+    # Enqueue voice tasks before text tasks while workers are not yet started
+    await pool.enqueue(
+        Task(
+            chat_id=1,
+            reply_to_message_id=1,
+            text="voice-1",
+            bot=mock_bot,
+            is_voice=True,
+        )
+    )
+    await pool.enqueue(
+        Task(
+            chat_id=2,
+            reply_to_message_id=2,
+            text="voice-2",
+            bot=mock_bot,
+            is_voice=True,
+        )
+    )
+    await pool.enqueue(
+        Task(
+            chat_id=3,
+            reply_to_message_id=3,
+            text="text-1",
+            bot=mock_bot,
+            is_voice=False,
+        )
+    )
+    await pool.enqueue(
+        Task(
+            chat_id=4,
+            reply_to_message_id=4,
+            text="text-2",
+            bot=mock_bot,
+            is_voice=False,
+        )
+    )
+
+    await pool.start()
+    await pool.stop(drain_timeout=2.0)
+
+    # All text tasks execute first (preserving FIFO), then voice tasks (preserving FIFO)
+    assert order == ["text-1", "text-2", "voice-1", "voice-2"]
+
+
+@pytest.mark.asyncio()
+async def test_concat_mp3_prefers_stream_copy_and_falls_back_to_reencode():
+    from unittest.mock import patch
+
+    from bot.worker import _concat_mp3
+
+    seen_cmds: list[tuple[str, ...]] = []
+
+    async def _mock_exec(*args, **kwargs):
+        seen_cmds.append(args)
+        proc = AsyncMock()
+        if "-c" in args and "copy" in args:
+            # Simulate stream-copy failure on mismatched codecs
+            proc.wait.return_value = 1
+            return proc
+        out_path = args[-1]
+        with open(out_path, "wb") as fh:  # noqa: ASYNC230
+            fh.write(b"reencoded_mp3")
+        proc.wait.return_value = 0
+        return proc
+
+    with patch("bot.worker.asyncio.create_subprocess_exec", side_effect=_mock_exec):
+        result = await _concat_mp3([b"p1", b"p2"])
+
+    assert result == b"reencoded_mp3"
+    assert len(seen_cmds) == 2
+    assert "copy" in seen_cmds[0]
+    assert "libmp3lame" in seen_cmds[1]
+
+
+@pytest.mark.asyncio()
+async def test_ffmpeg_semaphore_saturation_degrades_gracefully_to_text_only(mock_bot):
+    from contextlib import asynccontextmanager
+    from unittest.mock import patch
+
+    from bot.redis_client import SemaphoreAcquireTimeoutError
+
+    async def fake_stream(_chat_id: int, _text: str):
+        yield "第一句。"
+        yield "第二句。"
+
+    @asynccontextmanager
+    async def saturated_acquire(*_args, **_kwargs):
+        raise SemaphoreAcquireTimeoutError("ffmpeg", 0.05, "redis")
+        yield  # pragma: no cover
+
+    mock_bot.edit_message_text = AsyncMock()
+    pool = WorkerPool(num_workers=1, ffmpeg_timeout=0.05)
+    task = Task(
+        chat_id=321,
+        reply_to_message_id=654,
+        text="高負載測試",
+        bot=mock_bot,
+        is_voice=True,
+    )
+    with (
+        patch("bot.worker.chat_stream", fake_stream),
+        patch("bot.worker.tts", AsyncMock(return_value=b"mp3chunk")),
+        patch.object(pool._ffmpeg_semaphore, "acquire", side_effect=saturated_acquire),
+    ):
+        await pool._process(task)
+
+    # Worker must NOT crash; it skips audio and still delivers the complete text reply
+    mock_bot.send_audio.assert_not_awaited()
+    mock_bot.edit_message_text.assert_awaited()
+    assert mock_bot.edit_message_text.await_args.kwargs["text"] == "第一句。第二句。"
+

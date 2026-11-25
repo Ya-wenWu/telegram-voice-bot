@@ -27,3 +27,4 @@ chat_history*.json
 
 # 本機測試生成的壓縮檔
 *.zip
+/public/rebased-on-c6a4016.patch

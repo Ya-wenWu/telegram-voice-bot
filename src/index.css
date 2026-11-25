@@ -9,8 +9,8 @@
 @layer base {
   html {
     font-family: var(--font-sans);
-    color: #0f172a;
-    background-color: #f8fafc;
+    color: #13201a;
+    background-color: #faf7f2;
   }
 
   h1, h2, h3, h4 {
@@ -22,7 +22,30 @@
   }
 }
 
+@keyframes holiday-snowfall {
+  0% {
+    transform: translate3d(0, -5vh, 0);
+  }
+  50% {
+    transform: translate3d(18px, 50vh, 0);
+  }
+  100% {
+    transform: translate3d(-12px, 105vh, 0);
+  }
+}
+
+.holiday-snowflake {
+  animation-name: holiday-snowfall;
+  animation-timing-function: linear;
+  animation-iteration-count: infinite;
+  will-change: transform;
+}
+
 @media (prefers-reduced-motion: reduce) {
+  .holiday-snowflake {
+    display: none;
+  }
+
   *, *::before, *::after {
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;

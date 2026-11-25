@@ -13,9 +13,13 @@ import {
   X,
 } from 'lucide-react';
 import { BotLiveConsole } from './components/BotLiveConsole';
+import { CompliancePanel } from './components/CompliancePanel';
 import { EmailDeliveryPanel } from './components/EmailDeliveryPanel';
+import { ErrorBoundary } from './components/ErrorBoundary';
 import { FileInspector } from './components/FileInspector';
 import { FileTree } from './components/FileTree';
+import { LoadTestReportPanel } from './components/LoadTestReportPanel';
+import { SystemResourcesPanel } from './components/SystemResourcesPanel';
 import { TopBar, type WorkspaceTab } from './components/TopBar';
 import {
   downloadFilesAsZip,
@@ -517,16 +521,6 @@ export default function App() {
     }
   };
 
-  const handleTopBarPrimaryAction = () => {
-    if (bundle) {
-      void handleDownloadSelectedZip();
-    } else if (activeTab === 'live') {
-      setActiveTab('delivery');
-    } else {
-      handleQuickLoad(SAMPLE_REPOS[0].url);
-    }
-  };
-
   const handleRemoveHistory = (fullName: string, branch: string) => {
     setHistory((prev) => {
       const updated = prev.filter(
@@ -547,30 +541,38 @@ export default function App() {
     ? getFullArchiveUrl(bundle.meta.owner.login, bundle.meta.name, bundle.branch)
     : '#';
 
-  const zipButtonLabel =
-    checkedFiles.size > 0
-      ? `Download ZIP (${checkedFiles.size})`
-      : bundle
-      ? 'Download ZIP'
-      : activeTab === 'live'
-      ? 'Download Patch'
-      : 'Load Example';
-
   return (
     <div className="min-h-screen flex flex-col bg-[#F8FAFC] text-[#0F172A]">
       <TopBar
         activeTab={activeTab}
         onSelectTab={setActiveTab}
         recentCount={history.length}
-        hasRepository={Boolean(bundle)}
-        onPrimaryAction={handleTopBarPrimaryAction}
-        primaryActionLabel={zipProgress.active ? 'Bundling ZIP...' : zipButtonLabel}
-        primaryActionDisabled={loadingRepo || zipProgress.active}
       />
 
       <main className="flex-1 w-full max-w-[1440px] mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8">
         {/* LIVE BOT SANDBOX & ADMIN TAB */}
-        {activeTab === 'live' && <BotLiveConsole />}
+        {activeTab === 'live' && (
+          <ErrorBoundary sectionLabel="Web Voice Bot 介面">
+            <BotLiveConsole />
+          </ErrorBoundary>
+        )}
+
+        {/* LIVE SYSTEM RESOURCES & PROMETHEUS TELEMETRY TAB */}
+        {activeTab === 'resources' && (
+          <ErrorBoundary sectionLabel="系統資源監控面板">
+            <SystemResourcesPanel onOpenWebBot={() => setActiveTab('live')} />
+          </ErrorBoundary>
+        )}
+
+        {/* COMPLIANCE (ISO/IEC 27036 ARTIFACT GOVERNANCE & SUPPLY CHAIN SECURITY) TAB */}
+        {activeTab === 'compliance' && (
+          <ErrorBoundary sectionLabel="Compliance (ISO/IEC 27036)">
+            <CompliancePanel />
+          </ErrorBoundary>
+        )}
+
+        {/* LOAD TEST REPORT TAB */}
+        {activeTab === 'loadtest' && <LoadTestReportPanel />}
 
         {/* EMAIL DELIVERY TAB */}
         {activeTab === 'delivery' && <EmailDeliveryPanel />}
