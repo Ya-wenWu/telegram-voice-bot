@@ -29,12 +29,13 @@ except ImportError:  # pragma: no cover
     ZoneInfo = None  # type: ignore[assignment]
 
 # Ensure UTF-8 stdio on Windows (prevents cp950/gbk Unicode errors over Node pipes)
+logger = logging.getLogger(__name__)
 for _stream in (sys.stdin, sys.stdout, sys.stderr):
     if hasattr(_stream, "reconfigure"):
         try:
             _stream.reconfigure(encoding="utf-8", errors="replace")
         except (AttributeError, OSError):
-            logging.debug("Failed to reconfigure stdio stream encoding", exc_info=True)
+            logger.debug("Failed to reconfigure stdio stream encoding", exc_info=True)
 
 
 def _resolve_bot_repo() -> Path:
@@ -252,7 +253,7 @@ def current_day_key(override: str | None = None) -> str:
         try:
             return datetime.now(ZoneInfo(tz_name)).strftime("%Y-%m-%d")
         except Exception:  # noqa: BLE001
-            logging.debug("Invalid timezone %s, falling back to local UTC offset", tz_name)
+            logger.debug("Invalid timezone %s, falling back to local UTC offset", tz_name)
     return datetime.now(UTC).astimezone().strftime("%Y-%m-%d")
 
 
@@ -341,8 +342,8 @@ def load_state(day_key: str | None = None) -> dict:
                 if _enforce_daily_retention(state, today):
                     _write_state_atomic(state)
                 return state
-            except Exception:  # noqa: BLE001
-                logging.debug("Failed to load state file %s; initializing fresh state", STATE_FILE, exc_info=True)
+            except Exception: 
+                logger.debug("Failed to load state file %s; initializing fresh state", STATE_FILE, exc_info=True)
     return {
         "schema_version": STATE_SCHEMA_VERSION,
         "config": dict(DEFAULT_CONFIG),
@@ -562,8 +563,8 @@ async def cmd_status() -> dict:
     if (BOT_REPO / ".git").exists():
         try:
             git_branch, git_commit, git_log = await asyncio.to_thread(_read_git_status_sync)
-        except Exception:  # noqa: BLE001
-            logging.debug("Failed to read git metadata from %s", BOT_REPO, exc_info=True)
+        except Exception: 
+            logger.debug("Failed to read git metadata from %s", BOT_REPO, exc_info=True)
 
     t0 = time.monotonic()
     quota_ok = await check_daily_quota(
