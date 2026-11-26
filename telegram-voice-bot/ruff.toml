@@ -1,0 +1,7 @@
+# 固定 ruff 的模組分類，讓結果不再取決於「從哪個目錄執行」。
+# 之前從 telegram-voice-bot/ 執行時 bot、main 被視為第一方模組，
+# 從 repo 根目錄執行（例如 Codacy）時卻被視為第三方，import 排序會互相矛盾。
+src = ["."]
+
+[lint.isort]
+known-first-party = ["bot", "main"]
