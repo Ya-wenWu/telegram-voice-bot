@@ -805,10 +805,12 @@ class WorkerPool:
                 )
         finally:
             stop_event.set()
-            pending_tts = [t for t in tts_tasks if not t.done()]
-            for t in pending_tts:
-                t.cancel()
-            await asyncio.gather(typing_task, *pending_tts, return_exceptions=True)
+            for t in tts_tasks:
+                if not t.done():
+                    t.cancel()
+            # Await *every* TTS task, including ones that already failed: a finished-with-error
+            # task nobody awaits logs "Task exception was never retrieved".
+            await asyncio.gather(typing_task, *tts_tasks, return_exceptions=True)
 
     async def _deliver_text(self, task: Task, msg_id: int, text: str) -> None:
         """Send or update the final text message after streaming completes."""

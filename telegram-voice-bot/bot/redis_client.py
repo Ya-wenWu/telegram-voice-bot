@@ -51,6 +51,16 @@ end
 return 1
 """
 
+# Give back one unit of quota for a request that was charged but never admitted.
+# Only decrements a positive counter so it can never drive the key negative.
+_QUOTA_REFUND_SCRIPT = """
+local count = tonumber(redis.call('GET', KEYS[1]) or '0')
+if count > 0 then
+    return redis.call('DECR', KEYS[1])
+end
+return 0
+"""
+
 # Atomic ZSET lease semaphore: prune expired leases first so crashed/SIGKILL'd
 # workers never leak permits, then grant a new lease if active < max_permits.
 # KEYS[1]: semaphore ZSET key
@@ -198,6 +208,15 @@ def _record_redis_failure(operation: str, exc: Exception) -> None:
     )
 
 
+def _quota_key(user_id: int, bot_id: str = "default") -> str:
+    """Redis key for today's quota counter (shared by charge and refund)."""
+    day_str = f"{datetime.now(ZoneInfo(TIMEZONE)):%Y-%m-%d}"
+    safe_bot = _sanitize_resource(bot_id)
+    if safe_bot == "default":
+        return f"quota:{user_id}:{day_str}"
+    return f"quota:{safe_bot}:{user_id}:{day_str}"
+
+
 async def check_daily_quota(
     user_id: int,
     limit: int = DAILY_REQUEST_LIMIT,
@@ -216,19 +235,41 @@ async def check_daily_quota(
         return True
 
     try:
-        day_str = f"{datetime.now(ZoneInfo(TIMEZONE)):%Y-%m-%d}"
-        safe_bot = _sanitize_resource(bot_id)
-        key = (
-            f"quota:{user_id}:{day_str}"
-            if safe_bot == "default"
-            else f"quota:{safe_bot}:{user_id}:{day_str}"
-        )
+        key = _quota_key(user_id, bot_id)
         allowed = await _get_client().eval(_QUOTA_SCRIPT, 1, key, 172800, limit)
         _mark_redis_healthy()
         return bool(int(allowed))
     except Exception as exc:  # noqa: BLE001 - fail open on any Redis/timezone failure
         _record_redis_failure("quota check", exc)
         return True
+    finally:
+        _exit_redis_probe(is_probe)
+
+
+async def refund_daily_quota(
+    user_id: int,
+    limit: int = DAILY_REQUEST_LIMIT,
+    *,
+    bot_id: str = "default",
+) -> None:
+    """Return one unit of quota for a request that was charged but not admitted.
+
+    ``check_daily_quota`` charges before the task is enqueued; if the queue then turns
+    out to be full the request never runs, so it must not count against the day's limit.
+    Best-effort: Redis failures are swallowed (the quota check itself fails open).
+    """
+    if limit <= 0:
+        return
+
+    can_call, is_probe = _enter_redis_call()
+    if not can_call:
+        return
+
+    try:
+        await _get_client().eval(_QUOTA_REFUND_SCRIPT, 1, _quota_key(user_id, bot_id))
+        _mark_redis_healthy()
+    except Exception as exc:  # noqa: BLE001 - best-effort refund
+        _record_redis_failure("quota refund", exc)
     finally:
         _exit_redis_probe(is_probe)
 
