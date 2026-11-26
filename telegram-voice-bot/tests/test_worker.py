@@ -2,6 +2,7 @@ import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+
 from bot.worker import Task, WorkerPool
 
 
@@ -457,4 +458,3 @@ async def test_ffmpeg_semaphore_saturation_degrades_gracefully_to_text_only(mock
     mock_bot.send_audio.assert_not_awaited()
     mock_bot.edit_message_text.assert_awaited()
     assert mock_bot.edit_message_text.await_args.kwargs["text"] == "第一句。第二句。"
-

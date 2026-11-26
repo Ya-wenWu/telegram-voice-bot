@@ -57,7 +57,9 @@ class _ChallengeState:
 @dataclass
 class _UserBehaviorState:
     timestamps: deque[float] = field(default_factory=lambda: deque(maxlen=20))
-    payload_hashes: deque[tuple[float, str]] = field(default_factory=lambda: deque(maxlen=16))
+    payload_hashes: deque[tuple[float, str]] = field(
+        default_factory=lambda: deque(maxlen=16)
+    )
     strikes: int = 0
     quarantine_until: float = 0.0
     verified_until: float = 0.0

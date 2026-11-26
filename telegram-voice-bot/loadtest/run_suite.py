@@ -27,7 +27,8 @@ from typing import Any
 HERE = Path(__file__).resolve().parent
 LOCUST_BIN = str(Path(sys.executable).parent / "locust")
 
-SERVER_DOMAIN :str  = "http://127.0.0.1"
+SERVER_DOMAIN: str = "http://127.0.0.1"
+
 
 def _http_json(
     url: str, method: str = "GET", body: bytes | None = None

@@ -2,6 +2,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
+
 from bot.opencode_client import chat_stream
 from bot.worker import _concat_mp3, _scan_sentences, _split_sentences
 

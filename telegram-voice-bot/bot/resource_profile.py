@@ -169,7 +169,12 @@ def _read_cgroup_cpu_cores() -> int | None:
 
     quota_v1 = _read_first_int(Path("/sys/fs/cgroup/cpu/cpu.cfs_quota_us"))
     period_v1 = _read_first_int(Path("/sys/fs/cgroup/cpu/cpu.cfs_period_us"))
-    if quota_v1 is not None and period_v1 is not None and quota_v1 > 0 and period_v1 > 0:
+    if (
+        quota_v1 is not None
+        and period_v1 is not None
+        and quota_v1 > 0
+        and period_v1 > 0
+    ):
         return max(1, math.ceil(quota_v1 / period_v1))
     return None
 
@@ -222,7 +227,9 @@ def resolve_deployment_profile(
         if available_ram_mb is not None
         else snap.effective_available_ram_mb
     )
-    eff_cpu = max(1, int(cpu_cores)) if cpu_cores is not None else snap.effective_cpu_cores
+    eff_cpu = (
+        max(1, int(cpu_cores)) if cpu_cores is not None else snap.effective_cpu_cores
+    )
     if available_ram_mb is not None or cpu_cores is not None:
         snap = ResourceSnapshot(
             host_total_ram_mb=snap.host_total_ram_mb,
@@ -235,11 +242,22 @@ def resolve_deployment_profile(
             platform=snap.platform,
         )
 
-    raw_override = (override if override is not None else os.getenv("DEPLOYMENT_PROFILE", "auto")).strip().lower()
-    force_constrained = raw_override in ("constrained", "constrained_1c1g", "1c1g", "low")
+    raw_override = (
+        (override if override is not None else os.getenv("DEPLOYMENT_PROFILE", "auto"))
+        .strip()
+        .lower()
+    )
+    force_constrained = raw_override in (
+        "constrained",
+        "constrained_1c1g",
+        "1c1g",
+        "low",
+    )
     force_high = raw_override in ("high", "high_concurrency", "multibot")
 
-    if force_constrained or (not force_high and eff_ram <= CONSTRAINED_RAM_THRESHOLD_MB):
+    if force_constrained or (
+        not force_high and eff_ram <= CONSTRAINED_RAM_THRESHOLD_MB
+    ):
         reason = (
             "Forced via DEPLOYMENT_PROFILE=constrained"
             if force_constrained

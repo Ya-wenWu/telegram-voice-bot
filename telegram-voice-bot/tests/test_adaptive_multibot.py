@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
+
 from bot import redis_client
 from bot.memory import ConversationStore
 from bot.multi_bot import load_bot_registry
@@ -151,8 +152,12 @@ async def test_redis_quota_key_namespaces_additional_bots():
     redis_client._probing = False
 
     with patch.object(redis_client, "_get_client", return_value=fake_client):
-        assert await redis_client.check_daily_quota(42, limit=10, bot_id="default") is True
-        assert await redis_client.check_daily_quota(42, limit=10, bot_id="bot-2") is True
+        assert (
+            await redis_client.check_daily_quota(42, limit=10, bot_id="default") is True
+        )
+        assert (
+            await redis_client.check_daily_quota(42, limit=10, bot_id="bot-2") is True
+        )
 
     first_key = fake_client.eval.call_args_list[0].args[2]
     second_key = fake_client.eval.call_args_list[1].args[2]

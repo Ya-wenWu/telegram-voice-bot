@@ -1,6 +1,9 @@
+# 開發 / CI 工具：版本固定，避免工具升級後規則改變讓 CI 無預警變紅。
+# 要升級時改這裡並跑 `ruff check . && ruff format --check . && mypy bot/ main.py --ignore-missing-imports && pytest`
+# （Dependabot 會定期開 PR 提醒）。
 -r requirements.txt
-ruff
-pytest
-pytest-cov
-pytest-asyncio
-mypy
+ruff==0.17.5
+pytest==9.2.0
+pytest-cov==7.1.0
+pytest-asyncio==1.5.0
+mypy==1.11.2

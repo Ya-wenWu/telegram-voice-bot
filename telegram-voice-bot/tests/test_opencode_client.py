@@ -3,10 +3,11 @@ import sys
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import bot.opencode_client as oc_mod
-import bot.retry as retry_mod
 import httpx
 import pytest
+
+import bot.opencode_client as oc_mod
+import bot.retry as retry_mod
 from main import TokenRedactingFormatter, _extract_url_secret
 
 

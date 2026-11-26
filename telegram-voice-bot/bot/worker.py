@@ -70,7 +70,6 @@ class Task:
     tts_voice: str | None = None
 
 
-
 async def _typing_loop(bot: Bot, chat_id: int, stop_event: asyncio.Event) -> None:
     while not stop_event.is_set():
         try:
