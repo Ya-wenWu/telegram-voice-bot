@@ -2,8 +2,9 @@
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import bot.tts_provider as tp
 import pytest
+
+import bot.tts_provider as tp
 
 
 def test_factory_selects_providers():

@@ -305,7 +305,9 @@ class DistributedLeaseSemaphore:
             return self._redis_enabled
         return REDIS_SEMAPHORE_ENABLED
 
-    async def _try_acquire_redis_once(self, member_id: str) -> Literal["acquired", "busy", "fallback"]:
+    async def _try_acquire_redis_once(
+        self, member_id: str
+    ) -> Literal["acquired", "busy", "fallback"]:
         """Execute a single atomic ZSET lease acquisition attempt."""
         can_call, is_probe = _enter_redis_call()
         if not can_call:
@@ -405,7 +407,9 @@ class DistributedLeaseSemaphore:
     ) -> AsyncIterator[LeaseHandle]:
         """Acquire a concurrency permit with bounded wait, watchdog renewal, and safe cleanup."""
         effective_timeout = (
-            self._acquire_timeout_sec if timeout_sec is None else max(0.01, float(timeout_sec))
+            self._acquire_timeout_sec
+            if timeout_sec is None
+            else max(0.01, float(timeout_sec))
         )
         wait_started = time.monotonic()
         deadline = wait_started + effective_timeout
@@ -562,4 +566,3 @@ async def close_redis() -> None:
     _client = None
     _degraded = True
     _probing = False
-

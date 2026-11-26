@@ -1,7 +1,8 @@
 from unittest.mock import AsyncMock, patch
 
-import bot.redis_client as rc
 import pytest
+
+import bot.redis_client as rc
 
 
 @pytest.fixture(autouse=True)
@@ -291,4 +292,3 @@ class TestDistributedLeaseSemaphore:
             # Immediately re-acquiring must succeed without waiting for TTL expiry
             async with sem.acquire(timeout_sec=0.2) as lease:
                 assert lease.backend == "redis"
-

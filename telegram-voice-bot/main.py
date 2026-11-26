@@ -24,6 +24,10 @@ try:
 except ImportError:  # pragma: no cover - POSIX compatibility
     msvcrt = None
 
+from telegram import Update
+from telegram.error import InvalidToken, TelegramError
+from telegram.ext import Application, CommandHandler, MessageHandler, filters
+
 from bot import handlers
 from bot.config import (
     ACTIVE_DEPLOYMENT_PROFILE,
@@ -59,9 +63,6 @@ from bot.observability import (
 )
 from bot.redis_client import close_redis
 from bot.worker import WorkerPool
-from telegram import Update
-from telegram.error import InvalidToken, TelegramError
-from telegram.ext import Application, CommandHandler, MessageHandler, filters
 
 LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: [req=%(req_id)s] %(message)s"
 MIN_SECRET_LEN = 6
@@ -348,10 +349,7 @@ def main(argv: list[str] | None = None) -> None:
         )
 
         # Multi-bot high-concurrency path (only reachable when > 1 GB RAM and >= 2 bots configured)
-        if (
-            ACTIVE_DEPLOYMENT_PROFILE.mode == "high_concurrency"
-            and len(bots) >= 2
-        ):
+        if ACTIVE_DEPLOYMENT_PROFILE.mode == "high_concurrency" and len(bots) >= 2:
             manager = MultiBotManager(
                 bots,
                 profile=ACTIVE_DEPLOYMENT_PROFILE,

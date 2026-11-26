@@ -66,7 +66,9 @@ class ConversationStore:
         self._chats.move_to_end(chat_id)
         return list(entry.messages)
 
-    def append_turn(self, chat_id: ChatKey, user_text: str, assistant_text: str) -> None:
+    def append_turn(
+        self, chat_id: ChatKey, user_text: str, assistant_text: str
+    ) -> None:
         if self._max_turns <= 0:
             return
         now = time.monotonic()

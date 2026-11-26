@@ -6,7 +6,7 @@ try:
     from dotenv import load_dotenv
 except ImportError:  # pragma: no cover - bare Python fallback
 
-    def load_dotenv(*_args: object, **_kwargs: object) -> bool:
+    def load_dotenv(*_args: object, **_kwargs: object) -> bool:  # type: ignore[misc]
         return False
 
 
@@ -131,8 +131,12 @@ CONVERSATION_TTL_SEC = get_positive_int("CONVERSATION_TTL_SEC", 3600)
 # Redis is used for durable daily quotas and distributed lease semaphores; failures degrade safely.
 REDIS_URL = get("REDIS_URL", "redis://127.0.0.1:6379/0")
 DAILY_REQUEST_LIMIT = get_int("DAILY_REQUEST_LIMIT", 50)
-_default_redis_sem = "true" if ACTIVE_DEPLOYMENT_PROFILE.redis_semaphore_enabled else "false"
-REDIS_SEMAPHORE_ENABLED = get("REDIS_SEMAPHORE_ENABLED", _default_redis_sem).strip().lower() not in (
+_default_redis_sem = (
+    "true" if ACTIVE_DEPLOYMENT_PROFILE.redis_semaphore_enabled else "false"
+)
+REDIS_SEMAPHORE_ENABLED = get(
+    "REDIS_SEMAPHORE_ENABLED", _default_redis_sem
+).strip().lower() not in (
     "0",
     "false",
     "no",
@@ -166,7 +170,6 @@ BOT_GUARD_ENABLED = get("BOT_GUARD_ENABLED", "true").strip().lower() not in (
 BOT_GUARD_CHALLENGE_THRESHOLD = get_positive_int("BOT_GUARD_CHALLENGE_THRESHOLD", 50)
 BOT_GUARD_BLOCK_THRESHOLD = get_positive_int("BOT_GUARD_BLOCK_THRESHOLD", 80)
 BOT_GUARD_QUARANTINE_SEC = get_positive_int("BOT_GUARD_QUARANTINE_SEC", 180)
-
 
 
 def build_system_prompt() -> str:

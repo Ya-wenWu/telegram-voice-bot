@@ -500,7 +500,11 @@ def create_bound_handlers(
             try:
                 with start_span(
                     "queue.enqueue",
-                    attributes={"bot_id": bot_id, "chat_id": chat_id, "is_voice": False},
+                    attributes={
+                        "bot_id": bot_id,
+                        "chat_id": chat_id,
+                        "is_voice": False,
+                    },
                 ) as queue_span:
                     await worker_pool.enqueue(
                         Task(

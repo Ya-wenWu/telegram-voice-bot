@@ -2,9 +2,10 @@
 
 from unittest.mock import MagicMock, patch
 
-import main as main_mod
 import pytest
 from telegram.error import InvalidToken
+
+import main as main_mod
 
 
 def test_cleanup_stale_tmp_files_removes_only_bot_artifacts(tmp_path):

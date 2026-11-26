@@ -95,9 +95,7 @@ def load_bot_registry(
         else os.getenv("BOTS_REGISTRY_JSON", "")
     ).strip()
     raw_csv = (
-        tokens_csv
-        if tokens_csv is not None
-        else os.getenv("TELEGRAM_BOT_TOKENS", "")
+        tokens_csv if tokens_csv is not None else os.getenv("TELEGRAM_BOT_TOKENS", "")
     ).strip()
     fallback_tok = (
         default_token if default_token is not None else TELEGRAM_BOT_TOKEN
@@ -129,7 +127,9 @@ def load_bot_registry(
 
                     raw_allow = entry.get("allowedUserIds")
                     if isinstance(raw_allow, list):
-                        allow_tuple = tuple(int(x) for x in raw_allow if str(x).isdigit())
+                        allow_tuple = tuple(
+                            int(x) for x in raw_allow if str(x).isdigit()
+                        )
                     elif isinstance(raw_allow, str) and raw_allow.strip():
                         allow_tuple = tuple(_parse_user_ids(raw_allow))
                     else:
@@ -140,12 +140,16 @@ def load_bot_registry(
                             bot_id=bid,
                             name=str(entry.get("name") or bid).strip()[:48],
                             token=tok,
-                            tts_provider=str(entry.get("ttsProvider") or TTS_PROVIDER).strip(),
+                            tts_provider=str(
+                                entry.get("ttsProvider") or TTS_PROVIDER
+                            ).strip(),
                             tts_voice=str(entry.get("ttsVoice") or TTS_VOICE).strip(),
                             allowed_user_ids=allow_tuple,
                             daily_request_limit=max(
                                 0,
-                                int(entry.get("dailyRequestLimit", DAILY_REQUEST_LIMIT)),
+                                int(
+                                    entry.get("dailyRequestLimit", DAILY_REQUEST_LIMIT)
+                                ),
                             ),
                             weight=max(1, min(10, int(entry.get("weight", 1)))),
                         )
@@ -263,7 +267,10 @@ class MultiBotManager:
 
     def check_readiness(self) -> tuple[bool, dict[str, Any]]:
         if self._pool is None:
-            return False, {"worker_pool": "uninitialized", "active_bots": len(self._apps)}
+            return False, {
+                "worker_pool": "uninitialized",
+                "active_bots": len(self._apps),
+            }
         pool_ready, details = self._pool.is_ready()
         return pool_ready, {
             "deployment_profile": self._profile.mode,
@@ -271,9 +278,7 @@ class MultiBotManager:
             "worker_pool": details,
         }
 
-    async def handle_webhook_update(
-        self, bot_id: str, payload: dict[str, Any]
-    ) -> bool:
+    async def handle_webhook_update(self, bot_id: str, payload: dict[str, Any]) -> bool:
         """Process an incoming Telegram webhook update for *bot_id* on a shared HTTP port."""
         app = self._apps.get(bot_id)
         if app is None:

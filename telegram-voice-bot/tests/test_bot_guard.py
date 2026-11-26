@@ -65,9 +65,15 @@ def test_duplicate_flood_triggers_challenge_and_verify_unlocks():
     guard = TelegramBotGuard()
     upd = _make_update(123456, is_bot=False, text="buy cheap crypto now")
 
-    v1 = guard.evaluate_update(upd, bot_id="default", text="buy cheap crypto now", now=10.0)
-    v2 = guard.evaluate_update(upd, bot_id="default", text="buy cheap crypto now", now=14.0)
-    v3 = guard.evaluate_update(upd, bot_id="default", text="buy cheap crypto now", now=18.0)
+    v1 = guard.evaluate_update(
+        upd, bot_id="default", text="buy cheap crypto now", now=10.0
+    )
+    v2 = guard.evaluate_update(
+        upd, bot_id="default", text="buy cheap crypto now", now=14.0
+    )
+    v3 = guard.evaluate_update(
+        upd, bot_id="default", text="buy cheap crypto now", now=18.0
+    )
 
     assert v1.allowed
     assert v2.allowed
@@ -96,7 +102,9 @@ def test_wrong_challenge_attempts_escalate_to_quarantine():
     guard = TelegramBotGuard(quarantine_sec=120)
     upd = _make_update(2020, is_bot=False, text="spam")
     for idx in range(3):
-        verdict = guard.evaluate_update(upd, bot_id="default", text="spam", now=50.0 + idx * 3.0)
+        verdict = guard.evaluate_update(
+            upd, bot_id="default", text="spam", now=50.0 + idx * 3.0
+        )
     assert verdict.action == "challenge"
     assert verdict.challenge_prompt is not None
     wrong = _solve_math(verdict.challenge_prompt) + 99
