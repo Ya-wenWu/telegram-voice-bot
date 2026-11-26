@@ -10,7 +10,7 @@ from bot.bot_guard import default_bot_guard
 from bot.config import ALLOWED_USER_IDS, MAX_VOICE_BYTES
 from bot.logging_context import req_id_var
 from bot.observability import start_span
-from bot.redis_client import check_daily_quota
+from bot.redis_client import check_daily_quota, refund_daily_quota
 from bot.worker import Task, WorkerPool
 
 logger = logging.getLogger(__name__)
@@ -251,6 +251,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                     )
                 )
         except asyncio.QueueFull:
+            await refund_daily_quota(user_id)
             logger.warning(
                 "Worker queue full; rejecting text request for chat %d", chat_id
             )
@@ -330,6 +331,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                     )
                 )
         except asyncio.QueueFull:
+            await refund_daily_quota(user_id)
             logger.warning(
                 "Worker queue full; rejecting voice request for chat %d", chat_id
             )
@@ -404,6 +406,12 @@ def create_bound_handlers(
                 user_id, limit=daily_request_limit, bot_id=bot_id
             )
         return await check_daily_quota(user_id, bot_id=bot_id)
+
+    async def _refund_bound_quota(user_id: int) -> None:
+        if daily_request_limit is not None:
+            await refund_daily_quota(user_id, limit=daily_request_limit, bot_id=bot_id)
+        else:
+            await refund_daily_quota(user_id, bot_id=bot_id)
 
     async def bound_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         _set_request_id(update)
@@ -522,6 +530,7 @@ def create_bound_handlers(
                         )
                     )
             except asyncio.QueueFull:
+                await _refund_bound_quota(user_id)
                 logger.warning(
                     "Worker queue full (bot=%s); rejecting text request for chat %d",
                     bot_id,
@@ -598,6 +607,7 @@ def create_bound_handlers(
                         )
                     )
             except asyncio.QueueFull:
+                await _refund_bound_quota(user_id)
                 logger.warning(
                     "Worker queue full (bot=%s); rejecting voice request for chat %d",
                     bot_id,

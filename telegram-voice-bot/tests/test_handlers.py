@@ -287,3 +287,96 @@ class TestHandleVoice:
             )
         finally:
             h.worker_pool = None
+
+
+class TestQuotaRefundOnQueueFullRace:
+    """The pre-check sees free space, quota is charged, then enqueue still raises QueueFull.
+
+    ``check_daily_quota`` awaits Redis, so the queue can fill between the space
+    pre-check and the real enqueue. The charged request was never admitted and must
+    be refunded, otherwise rejected requests permanently burn the daily quota.
+    """
+
+    @pytest.mark.asyncio()
+    async def test_text_refunds_quota(self):
+        h.ALLOWED_USER_IDS = [123]
+        h._last_request.clear()
+        update = _make_update(user_id=123, text="hello")
+        pool = MagicMock()
+        pool.enqueue = AsyncMock(side_effect=asyncio.QueueFull)
+        h.worker_pool = pool
+        refund = AsyncMock()
+        try:
+            with (
+                patch("bot.handlers.check_daily_quota", AsyncMock(return_value=True)),
+                patch("bot.handlers.refund_daily_quota", refund),
+            ):
+                await handle_text(update, _make_context())
+        finally:
+            h.worker_pool = None
+        refund.assert_awaited_once_with(123)
+
+    @pytest.mark.asyncio()
+    async def test_voice_refunds_quota(self):
+        h.ALLOWED_USER_IDS = [123]
+        h._last_request.clear()
+        update = _make_update(user_id=123, voice_file_size=1000)
+        pool = MagicMock()
+        pool.enqueue = AsyncMock(side_effect=asyncio.QueueFull)
+        h.worker_pool = pool
+        refund = AsyncMock()
+        try:
+            with (
+                patch("bot.handlers.check_daily_quota", AsyncMock(return_value=True)),
+                patch("bot.handlers.refund_daily_quota", refund),
+            ):
+                await handle_voice(update, _make_context())
+        finally:
+            h.worker_pool = None
+        refund.assert_awaited_once_with(123)
+
+    @pytest.mark.asyncio()
+    async def test_no_refund_when_enqueue_succeeds(self):
+        h.ALLOWED_USER_IDS = [123]
+        h._last_request.clear()
+        update = _make_update(user_id=123, text="hello")
+        pool = MagicMock()
+        pool.enqueue = AsyncMock()
+        h.worker_pool = pool
+        refund = AsyncMock()
+        try:
+            with (
+                patch("bot.handlers.check_daily_quota", AsyncMock(return_value=True)),
+                patch("bot.handlers.refund_daily_quota", refund),
+            ):
+                await handle_text(update, _make_context())
+        finally:
+            h.worker_pool = None
+        refund.assert_not_awaited()
+
+    @pytest.mark.asyncio()
+    @pytest.mark.parametrize("kind", ["text", "voice"])
+    async def test_multi_bot_refunds_with_its_own_bot_id_and_limit(self, kind):
+        handlers = h.create_bound_handlers(
+            bot_id="alpha", allowed_user_ids={123}, daily_request_limit=7
+        )
+        h._last_request.clear()
+        h._last_request_by_bot.clear()
+        update = (
+            _make_update(user_id=123, text="hello")
+            if kind == "text"
+            else _make_update(user_id=123, voice_file_size=1000)
+        )
+        pool = MagicMock()
+        pool.enqueue = AsyncMock(side_effect=asyncio.QueueFull)
+        h.worker_pool = pool
+        refund = AsyncMock()
+        try:
+            with (
+                patch("bot.handlers.check_daily_quota", AsyncMock(return_value=True)),
+                patch("bot.handlers.refund_daily_quota", refund),
+            ):
+                await handlers[f"handle_{kind}"](update, _make_context())
+        finally:
+            h.worker_pool = None
+        refund.assert_awaited_once_with(123, limit=7, bot_id="alpha")

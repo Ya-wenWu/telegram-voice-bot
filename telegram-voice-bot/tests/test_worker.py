@@ -458,3 +458,60 @@ async def test_ffmpeg_semaphore_saturation_degrades_gracefully_to_text_only(mock
     mock_bot.send_audio.assert_not_awaited()
     mock_bot.edit_message_text.assert_awaited()
     assert mock_bot.edit_message_text.await_args.kwargs["text"] == "第一句。第二句。"
+
+
+@pytest.mark.asyncio()
+async def test_failed_tts_task_is_retrieved_when_stream_errors_midway(mock_bot):
+    """A TTS task that already failed must have its exception retrieved.
+
+    Sequence: the LLM stream yields one sentence (TTS is scheduled and fails fast),
+    then the stream itself raises, so the voice-collection phase never runs. Without
+    cleanup the finished-with-error task is dropped and asyncio later logs
+    "Task exception was never retrieved".
+
+    Checked on the task's own state (``_log_traceback`` is asyncio's "unretrieved"
+    flag) rather than on garbage-collection timing, which pytest's log capture delays.
+    """
+    from unittest.mock import patch
+
+    async def fake_stream(_chat_id: int, _text: str, *, history=None):
+        yield "第一句。"
+        await asyncio.sleep(0.05)  # let the TTS task fail before the stream errors
+        raise RuntimeError("stream broke")
+
+    status_msg = MagicMock()
+    status_msg.edit_text = AsyncMock()
+    pool = WorkerPool(num_workers=1)
+
+    created: list[asyncio.Task] = []
+    original = pool._tts_limited
+
+    async def spy(text: str) -> bytes:
+        current = asyncio.current_task()
+        assert current is not None
+        created.append(current)
+        return await original(text)
+
+    pool._tts_limited = spy  # type: ignore[method-assign]
+
+    with (
+        patch("bot.worker.chat_stream", fake_stream),
+        patch("bot.worker.tts", AsyncMock(side_effect=RuntimeError("tts boom"))),
+    ):
+        await pool._process(
+            Task(
+                chat_id=901,
+                reply_to_message_id=1,
+                text="你好",
+                bot=mock_bot,
+                is_voice=True,
+                status_message=status_msg,
+                req_id="901",
+            )
+        )
+
+    assert created, "TTS should have been scheduled for the first sentence"
+    assert all(t.done() for t in created), "no TTS task may outlive the request"
+    assert not [t for t in created if t._log_traceback], (
+        "a failed TTS task's exception was never retrieved"
+    )

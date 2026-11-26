@@ -49,6 +49,45 @@ class TestDailyQuota:
         assert await rc.check_daily_quota(1, limit=0) is True
 
     @pytest.mark.asyncio()
+    async def test_refund_decrements_the_same_key_that_was_charged(self):
+        client = AsyncMock()
+        client.eval.return_value = 1
+        with patch.object(rc, "_get_client", return_value=client):
+            await rc.check_daily_quota(7, limit=5)
+            await rc.refund_daily_quota(7, limit=5)
+        charge_key = client.eval.await_args_list[0].args[2]
+        refund_key = client.eval.await_args_list[1].args[2]
+        assert charge_key == refund_key
+        assert client.eval.await_args_list[1].args[0] == rc._QUOTA_REFUND_SCRIPT
+
+    @pytest.mark.asyncio()
+    async def test_refund_uses_per_bot_key(self):
+        client = AsyncMock()
+        client.eval.return_value = 1
+        with patch.object(rc, "_get_client", return_value=client):
+            await rc.check_daily_quota(7, limit=5, bot_id="alpha")
+            await rc.refund_daily_quota(7, limit=5, bot_id="alpha")
+        assert (
+            client.eval.await_args_list[0].args[2]
+            == client.eval.await_args_list[1].args[2]
+        )
+        assert "alpha" in client.eval.await_args_list[1].args[2]
+
+    @pytest.mark.asyncio()
+    async def test_refund_is_noop_when_quota_disabled(self):
+        client = AsyncMock()
+        with patch.object(rc, "_get_client", return_value=client):
+            await rc.refund_daily_quota(7, limit=0)
+        client.eval.assert_not_awaited()
+
+    @pytest.mark.asyncio()
+    async def test_refund_swallows_redis_errors(self):
+        client = AsyncMock()
+        client.eval.side_effect = ConnectionError("down")
+        with patch.object(rc, "_get_client", return_value=client):
+            await rc.refund_daily_quota(7, limit=5)  # must not raise
+
+    @pytest.mark.asyncio()
     async def test_cooldown_skips_redis(self):
         client = AsyncMock()
         client.eval.side_effect = ConnectionError("down")
