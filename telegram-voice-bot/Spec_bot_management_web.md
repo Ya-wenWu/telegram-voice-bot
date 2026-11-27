@@ -82,6 +82,38 @@ Python 端要做的改動：
 - **bot 的 `.env`：** 維持 `chmod 600`。
 - **後台對外：** 只在需要時開放，建議放在反向代理與 TLS 之後，或只允許內網或 VPN 存取。
 
+### 現行網頁服務（Node/Express）的存取控制
+
+在 ASP.NET Core 後台完成之前，現有的 Web Voice Bot（`server.ts`）是對外唯一的 HTTP 入口，它同樣能改白名單、跑測試、下載原始碼，所以適用同一個原則：**預設只信任本機，遠端一律要憑證**。
+
+**判定規則（`enforceNetworkAuth`）**
+
+| 條件 | 結果 |
+| --- | --- |
+| 有設定 `WEB_API_TOKEN` | 所有受保護路由都必須帶 `Authorization: Bearer <token>`，缺少或錯誤回 `401` |
+| 沒設定，且是**直接的**本機連線（127.0.0.1／::1，且不帶轉發標頭） | 放行 |
+| 沒設定，其餘情況（遠端、經反向代理轉入） | 回 `403` |
+
+- **沒有「雲端環境」例外。** 先前 `K_SERVICE`、`APP_URL` 判定為雲端時會略過拒絕，已移除；公開網址同樣需要 token。
+- **反向代理不算本機。** 同一台機器上的 nginx、Caddy 也是從 127.0.0.1 連入。只要請求帶 `X-Forwarded-For`、`X-Forwarded-Host`、`X-Forwarded-Proto`、`X-Real-IP` 或 `Forwarded` 任一標頭，就視為遠端。
+- **比較 token 用常數時間比對**（`timingSafeEqual`）。
+- 非本機位址監聽卻沒設 `WEB_API_TOKEN` 時，啟動會印出 ERROR 日誌。
+
+**路由分級**
+
+| 類別 | 路徑 | 保護 |
+| --- | --- | --- |
+| 公開 | `/health`、`/ready`、前端靜態檔案 | 無（供負載平衡器與健康檢查，不含機密） |
+| 受保護（網路層） | `/metrics`、`/api/observability/*`、`/api/compliance/*`、`/api/download/*`、`/web-voice-bot-complete.zip` | `requireNetworkAuth` |
+| 受保護（網路層＋應用層） | `/api/bot/*` | `requireApiGuard`（網路層＋800 ms POST 防抖），再加 BotGuard |
+| 額外管理權杖 | `/api/bot/config`、`/api/bot/run-tests`、`/api/bot/bots` 的寫入、供應鏈檢查清單 | 有設 `ADMIN_API_TOKEN` 時另需管理權杖 |
+
+**BotGuard 不是身分驗證。** 它判斷的是「像不像機器人」（誘捕欄位、自動化 User-Agent、請求節奏、重複內容），通過方式是解 SHA-256 工作量證明或人機題，任何人都能解。它補強 `WEB_API_TOKEN`，不能取代它。曾實測：雲端模式、未設 token 時，解開 PoW 後即可改寫 `ALLOWED_USER_IDS`。
+
+**前端行為。** 瀏覽器會在受保護的同源請求自動帶上 token（`src/services/apiAuth.ts` 包裝 `fetch`，只處理同源路徑，不會送往 GitHub 或 Google）；收到 `401`，或訊息指出需要 `WEB_API_TOKEN` 的 `403`，就跳出輸入視窗。Token 存在 `sessionStorage`，關閉分頁即清除。
+
+**ASP.NET Core 後台沿用同一份邊界。** 後台與 Blazor 客戶端上線後，上表的「受保護」路徑改由後台的登入機制取代 `WEB_API_TOKEN`，但「遠端一律要憑證、轉發標頭不算本機、`/health` 與 `/ready` 之外不公開」這三條不變。
+
 ## 失效處理
 
 bot 不能因為後台或 Redis 出問題而停擺，也不能因此放寬權限。
@@ -161,6 +193,11 @@ bot 不能因為後台或 Redis 出問題而停擺，也不能因此放寬權限
 - [ ] **記憶體：** 三個服務加 Redis 同時運作並處理一則語音回覆時，主機沒有觸發 OOM，swap 使用量維持在實測後訂出的上限內。
 - [ ] **Redis 邊界：** 從主機外部連不上 Redis 的 6379 port。
 - [ ] **對話記憶：** 連續追問時 bot 能參照前文；超過設定的輪數或 TTL 後會遺忘；清除功能生效。
+- [ ] **非公開路由全部受保護：** 沒設 `WEB_API_TOKEN` 時，從非本機位址（含雲端模式）請求 `/metrics`、`/api/observability/*`、`/api/compliance/*`、`/api/download/*`、`/web-voice-bot-complete.zip`、`/api/bot/*`，都回 `401` 或 `403`；只有 `/health` 與 `/ready` 能存取。
+- [ ] **反向代理不被當成本機：** 從 127.0.0.1 發出但帶 `X-Forwarded-For`（或 `Forwarded`、`X-Real-IP`、`X-Forwarded-Proto`）的請求，在沒設 token 時回 `403`。
+- [ ] **有 token 才放行：** 設定 `WEB_API_TOKEN` 後，不帶或帶錯 token 回 `401`；帶正確 token 的受保護路由回 `200`（`/api/bot/*` 另需通過 BotGuard）。
+- [ ] **本機使用不受影響：** 不設 token、直接用 `http://localhost` 開啟網頁，不出現輸入視窗，所有面板正常載入。
+- [ ] **Token 不外送：** 網頁對 `api.github.com` 等其他網域發出的請求不帶 `Authorization` 標頭。
 - [ ] **既有品質門檻：** `pytest`、`ruff check`、`ruff format --check`、`mypy` 全部通過。
 
 ## 待確認事項與風險
@@ -176,6 +213,8 @@ bot 不能因為後台或 Redis 出問題而停擺，也不能因此放寬權限
 風險：
 
 - **記憶體不足：** 五樣服務共用 1 GB，估計值未實測，可能比預期更緊。對策是階段 0 先量測，必要時移除 Docker 或調整服務。
+- **BotGuard 的 IP 判斷可被偽造：** `getClientIp()` 無條件採用請求帶的 `X-Forwarded-For` 第一個值，BotGuard 以它做追蹤與隔離，攻擊者每次換一個假 IP 就能繞過節流與隔離。需要「只信任已知代理」的設定（例如 Express `trust proxy`）後才能修，尚未處理。
+- **雲端部署的行為變更：** 沒設 `WEB_API_TOKEN` 的雲端或 AI Studio 部署，除 `/health`、`/ready` 外全部回 `403`，必須設定 token。同機反向代理對外時亦同。
 - **後台是高價值目標：** 它能改白名單與金鑰，認證或網路邊界出錯等於交出 bot 控制權。
 - **對話內容是個人資料：** 存進 Redis 後要有保存期限與清除機制。
 - **issue #22 原文需更新：** 它寫的是 ASP.NET Core 內含 Telegram worker 並用 `IOptionsMonitor`，與「Python bot 為核心」不符，本規格確認後應取代它。
