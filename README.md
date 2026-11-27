@@ -52,7 +52,7 @@ chmod +x ./start-linux.sh && ./start-linux.sh
 2. **輸入淨化與預篩攔截（`promptGuard.ts`）**：自動剝除零寬／雙向隱藏字元、限制單則訊息長度（防 Token 轟炸），並在送交模型前攔截指令覆寫、越獄模式、系統提示詞套取、金鑰套取與偽造 `[SYSTEM]` 角色標籤；被攔截的攻擊**不耗費 API 額度、也不寫入多輪記憶**（防記憶污染）。
 3. **語音防間接注入（Audio STT Lock）**：語音轉文字階段鎖定獨立 `STT_SYSTEM_INSTRUCTION` 僅做逐字轉錄、不執行語音中的指令，且轉錄文字同樣經過 Prompt Injection 偵測。
 4. **不可信資料邊界與輸出遮罩**：所有使用者訊息以 `<user_message>...</user_message>` 隔離並跳脫閉合標籤；模型輸出回傳前再經敏感金鑰遮罩與長度上限檢查。
-5. **本機綁定、速率限制與端點保護**：本機啟動預設僅監聽 `127.0.0.1` 並要求非本機連線提供 `WEB_API_TOKEN`；同時內建每 IP 滑動視窗限流（20 次／分鐘）與 800ms POST 防抖，對外公開部署亦可設定 `ADMIN_API_TOKEN` 鎖定動態設定與測試端點。
+5. **本機綁定、速率限制與端點保護**：本機啟動預設僅監聽 `127.0.0.1`；除 `/health`、`/ready` 外，所有路由（`/api/*`、`/metrics`、原始碼 ZIP）對非本機連線（含經反向代理轉入、雲端環境）都要求 `WEB_API_TOKEN`，細節見 [規格文件](telegram-voice-bot/Spec_bot_management_web.md)；同時內建每 IP 滑動視窗限流（20 次／分鐘）與 800ms POST 防抖，對外公開部署亦可設定 `ADMIN_API_TOKEN` 鎖定動態設定與測試端點。
 
 ---
 
@@ -72,3 +72,4 @@ chmod +x ./start-linux.sh && ./start-linux.sh
 
 - 本機自架時，API Key 存放於受 `.gitignore` 保護的本機 `.env`。
 - 若要部署至雲端（例如 Cloud Run、Render、Fly.io 或 GitHub Actions），請改用平台原生的 **Secrets / Secret Manager** 注入 `GEMINI_API_KEY`，切勿將 `.env` 打包進映像檔或提交至儲存庫。
+- 雲端部署**必須**同時以 Secrets 設定 `WEB_API_TOKEN`（建議 `openssl rand -hex 32`）；未設定時，除 `/health`、`/ready` 外的路由都會回 403。網頁會在需要時跳出視窗請你輸入 token。
