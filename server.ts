@@ -1295,6 +1295,22 @@ function isLoopbackAddress(remoteAddress: string | undefined): boolean {
   );
 }
 
+// A reverse proxy (nginx, Caddy, a cloud load balancer sidecar...) on the same host also
+// connects from 127.0.0.1, which would make every remote visitor look "local". Requests that
+// carry forwarding headers were relayed by a proxy, so they are never treated as direct-local.
+const FORWARDING_HEADERS = [
+  'x-forwarded-for',
+  'x-forwarded-host',
+  'x-forwarded-proto',
+  'x-real-ip',
+  'forwarded',
+] as const;
+
+function isDirectLoopbackRequest(req: express.Request): boolean {
+  if (!isLoopbackAddress(req.socket.remoteAddress)) return false;
+  return !FORWARDING_HEADERS.some((h) => req.headers[h] !== undefined);
+}
+
 function isCloudHostedRuntime(): boolean {
   return Boolean(
     process.env.K_SERVICE ||
@@ -1305,27 +1321,49 @@ function isCloudHostedRuntime(): boolean {
 
 const _webRateLimit = new Map<string, number>();
 
-function requireApiGuard(
-  req: express.Request,
-  res: express.Response,
-  next: express.NextFunction
-): void {
+/**
+ * Network-level access control shared by every non-public route:
+ *  - WEB_API_TOKEN configured -> a matching `Authorization: Bearer` token is required, always.
+ *  - not configured          -> only a direct (non-proxied) loopback connection is allowed.
+ * There is deliberately no "cloud-hosted" exemption: a public URL needs the token too.
+ */
+function enforceNetworkAuth(req: express.Request, res: express.Response): boolean {
   const configuredToken = (process.env.WEB_API_TOKEN || '').trim();
-  const isLocal = isLoopbackAddress(req.socket.remoteAddress);
 
   if (configuredToken) {
     const authHeader = req.headers.authorization || '';
     const bearer = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
     if (!bearer || !timingSafeEqualStr(bearer, configuredToken)) {
       res.status(401).json({ error: 'Unauthorized: invalid or missing API token.' });
-      return;
+      return false;
     }
-  } else if (!isLocal && !isCloudHostedRuntime()) {
+    return true;
+  }
+
+  if (!isDirectLoopbackRequest(req)) {
     res.status(403).json({
       error: 'Forbidden: non-loopback access requires WEB_API_TOKEN to be configured.',
     });
-    return;
+    return false;
   }
+  return true;
+}
+
+/** Guard for auxiliary routes (metrics, observability, compliance, downloads). */
+function requireNetworkAuth(
+  req: express.Request,
+  res: express.Response,
+  next: express.NextFunction
+): void {
+  if (enforceNetworkAuth(req, res)) next();
+}
+
+function requireApiGuard(
+  req: express.Request,
+  res: express.Response,
+  next: express.NextFunction
+): void {
+  if (!enforceNetworkAuth(req, res)) return;
 
   if (req.method === 'POST') {
     const key = `${getClientIp(req)}:${req.path}`;
@@ -1494,6 +1532,19 @@ async function createServer() {
       },
     });
   });
+
+  // Everything below except /health and /ready is non-public: the source ZIP, SBOM, supply-chain
+  // and compliance data, diagnostics and metrics must not be readable by unauthenticated callers.
+  app.use(
+    [
+      '/metrics',
+      '/api/observability',
+      '/api/compliance',
+      '/api/download',
+      '/web-voice-bot-complete.zip',
+    ],
+    requireNetworkAuth
+  );
 
   app.get('/metrics', (_req, res) => {
     res.setHeader('Content-Type', 'text/plain; version=0.0.4; charset=utf-8');
@@ -3508,6 +3559,14 @@ async function createServer() {
 
   const port = Number(process.env.PORT || 3000);
   const host = process.env.HOST || (isCloudHostedRuntime() ? '0.0.0.0' : '127.0.0.1');
+  const loopbackHosts = new Set(['127.0.0.1', '::1', 'localhost']);
+  if (!loopbackHosts.has(host) && !(process.env.WEB_API_TOKEN || '').trim()) {
+    logJson(
+      'ERROR',
+      'Listening on a non-loopback address without WEB_API_TOKEN: every API route except /health and /ready will reject remote requests (403). Set WEB_API_TOKEN to enable remote access.',
+      { host, port }
+    );
+  }
   const httpServer = app.listen(port, host, () => {
     logJson('INFO', `Server listening on http://${host}:${port}`, {
       host,
