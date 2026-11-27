@@ -1,0 +1,854 @@
+import asyncio
+import io
+import logging
+import os
+import shutil
+import tempfile
+import time
+import uuid
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+import httpx
+from telegram import Bot
+
+from bot.config import (
+    BOT_QUEUE_MAXSIZE,
+    CONVERSATION_MAX_TURNS,
+    CONVERSATION_TTL_SEC,
+    FFMPEG_CONCURRENCY,
+    FFMPEG_TIMEOUT_SEC,
+    MAX_VOICE_BYTES,
+    TMP_DIR,
+    TTS_CONCURRENCY,
+    TTS_PROVIDER,
+    TTS_TIMEOUT_SEC,
+)
+from bot.logging_context import req_id_var
+from bot.memory import ConversationStore
+from bot.observability import metrics, start_span
+from bot.opencode_client import chat, chat_stream, tts
+from bot.redis_client import create_ffmpeg_semaphore, create_tts_semaphore
+from bot.whisper import transcribe
+
+logger = logging.getLogger(__name__)
+
+MAX_MSG_LEN = 4096  # Telegram limit, measured in UTF-16 code units
+MAX_RESPONSE_CHARS = 16000
+TYPING_REFRESH_INTERVAL = 4.0
+STREAM_EDIT_INTERVAL = 1.0
+# Keep synthesized audio bounded; 16k characters would be hours of speech.
+TTS_MAX_CHARS = 1500
+TTS_MAX_SENTENCES = 40
+FFMPEG_KILL_WAIT_SEC = 5.0
+
+# Chinese + English sentence endings
+_SENTENCE_ENDS = frozenset("。！？；.!?\n")
+
+
+def _has_content(sentence: str) -> bool:
+    """True when a sentence contains a letter, digit, or CJK character."""
+    return any(ch.isalnum() or "\u4e00" <= ch <= "\u9fff" for ch in sentence)
+
+
+@dataclass
+class Task:
+    chat_id: int
+    reply_to_message_id: int
+    text: str
+    bot: Bot
+    is_voice: bool = False
+    voice: Any = None
+    status_message: Any = None
+    req_id: str = "-"
+    created_at: float = field(default_factory=time.monotonic)
+    trace_id: str = "-"
+    parent_span_id: str = "-"
+    bot_id: str = "default"
+    bot_weight: int = 1
+    tts_voice: str | None = None
+
+
+async def _typing_loop(bot: Bot, chat_id: int, stop_event: asyncio.Event) -> None:
+    while not stop_event.is_set():
+        try:
+            await bot.send_chat_action(chat_id=chat_id, action="typing")
+        except Exception as e:  # noqa: BLE001 - typing is best-effort
+            logger.debug("send_chat_action failed: %s: %s", type(e).__name__, e)
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=TYPING_REFRESH_INTERVAL)
+        except TimeoutError:
+            pass
+
+
+def _scan_sentences(
+    text: str,
+    pos: int,
+    min_len: int = 1,
+    scan_from: int | None = None,
+) -> tuple[int, list[str]]:
+    """Scan *text* from character position *pos* forward for complete sentences.
+
+    Returns ``(new_pos, sentences)`` using *scan_from* so unpunctuated prefixes
+    are inspected only once (O(n) total instead of O(n^2)).
+    """
+    found: list[str] = []
+    i = pos if scan_from is None else max(pos, scan_from)
+    n = len(text)
+    while i < n:
+        if text[i] in _SENTENCE_ENDS:
+            sentence = text[pos : i + 1].strip()
+            pos = i + 1
+            if len(sentence) >= min_len and _has_content(sentence):
+                found.append(sentence)
+        i += 1
+    return pos, found
+
+
+def _split_sentences(text: str) -> list[str]:
+    """Split text into sentences at natural boundaries (kept for tests)."""
+    if not text:
+        return []
+    sentences = []
+    buf: list[str] = []
+    for ch in text:
+        buf.append(ch)
+        if ch in _SENTENCE_ENDS:
+            s = "".join(buf).strip()
+            if s:
+                sentences.append(s)
+            buf = []
+    remaining = "".join(buf).strip()
+    if remaining:
+        sentences.append(remaining)
+    return sentences
+
+
+def _utf16_len(text: str) -> int:
+    return len(text.encode("utf-16-le")) // 2
+
+
+def _take_prefix(text: str, limit: int) -> tuple[str, str]:
+    """Split *text* so the first part fits Telegram's UTF-16 limit."""
+    if _utf16_len(text) <= limit:
+        return text, ""
+    units = 0
+    cut = len(text)
+    for i, ch in enumerate(text):
+        units += 2 if ord(ch) > 0xFFFF else 1
+        if units > limit:
+            cut = i
+            break
+    prefix, rest = text[:cut], text[cut:]
+    for sep in ("\n", " "):
+        at = prefix.rfind(sep)
+        if at > 0 and _utf16_len(prefix[:at]) >= limit * 0.6:
+            return prefix[: at + 1], text[at + 1 :]
+    return prefix, rest
+
+
+def _truncate(text: str, limit: int = MAX_MSG_LEN) -> str:
+    return _take_prefix(text, limit)[0]
+
+
+def _split_message(text: str, limit: int = MAX_MSG_LEN) -> list[str]:
+    if not text:
+        return []
+    chunks: list[str] = []
+    while text:
+        chunk, text = _take_prefix(text, limit)
+        chunks.append(chunk)
+    return chunks
+
+
+def _create_temp_voice_path() -> str:
+    """Create a uniquely named temporary .ogg file path inside TMP_DIR."""
+    with tempfile.NamedTemporaryFile(
+        dir=TMP_DIR,
+        prefix=f"voice_{uuid.uuid4().hex[:8]}_",
+        suffix=".ogg",
+        delete=False,
+    ) as tmp:
+        return tmp.name
+
+
+async def _download_and_transcribe_voice(voice: Any) -> str:
+    """Download voice to disk, stream to Whisper STT, and always unlink temp file."""
+    await asyncio.to_thread(TMP_DIR.mkdir, parents=True, exist_ok=True)
+    tmp_path = await asyncio.to_thread(_create_temp_voice_path)
+    try:
+        file = await voice.get_file()
+        await file.download_to_drive(tmp_path)
+        size = await asyncio.to_thread(os.path.getsize, tmp_path)
+        if size > MAX_VOICE_BYTES:
+            raise ValueError("Voice file exceeds MAX_VOICE_BYTES after download")
+        return await transcribe(tmp_path)
+    finally:
+        try:
+            await asyncio.to_thread(os.unlink, tmp_path)
+        except OSError:
+            pass
+
+
+async def _concat_mp3(
+    parts: list[bytes],
+    *,
+    timeout: float = FFMPEG_TIMEOUT_SEC,
+) -> bytes:
+    """Concatenate multiple MP3 byte streams into one using ffmpeg.
+
+    Limits ffmpeg to a single thread and enforces a hard timeout so a stalled
+    subprocess cannot wedge the worker or spike memory on a 1 vCPU host.
+    """
+    if len(parts) <= 1:
+        return parts[0] if parts else b""
+
+    await asyncio.to_thread(TMP_DIR.mkdir, parents=True, exist_ok=True)
+    tmpdir = tempfile.mkdtemp(prefix=f"tts_concat_{uuid.uuid4().hex[:8]}_", dir=TMP_DIR)
+    try:
+        paths = []
+        for i, data in enumerate(parts):
+            path = os.path.join(tmpdir, f"part_{i:03d}.mp3")
+            await asyncio.to_thread(_write_bytes, path, data)
+            paths.append(path)
+
+        list_path = os.path.join(tmpdir, "files.txt")
+        listing = "".join(_format_ffmpeg_concat_entry(p) for p in paths)
+        await asyncio.to_thread(_write_text, list_path, listing)
+
+        out_path = os.path.join(tmpdir, f"out_{uuid.uuid4().hex[:8]}.mp3")
+
+        async def _run_ffmpeg(codec_args: list[str]) -> int:
+            subproc = await asyncio.create_subprocess_exec(
+                "ffmpeg",
+                "-y",
+                "-threads",
+                "1",
+                "-f",
+                "concat",
+                "-safe",
+                "0",
+                "-i",
+                list_path,
+                *codec_args,
+                "-loglevel",
+                "quiet",
+                out_path,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            try:
+                return await asyncio.wait_for(subproc.wait(), timeout=timeout)
+            except (TimeoutError, asyncio.CancelledError):
+                logger.warning(
+                    "ffmpeg concat timed out or cancelled after %.1fs; killing subprocess",
+                    timeout,
+                )
+                if subproc.returncode is None:
+                    try:
+                        subproc.kill()
+                    except ProcessLookupError:
+                        pass
+                    try:
+                        await asyncio.wait_for(
+                            subproc.wait(), timeout=FFMPEG_KILL_WAIT_SEC
+                        )
+                    except TimeoutError:
+                        logger.error("ffmpeg subprocess did not exit after kill()")
+                raise
+
+        # Prefer lossless stream copy (-c copy) to avoid CPU-heavy MP3 re-encoding
+        # when all TTS segments share identical codec parameters; fall back to
+        # libmp3lame re-encoding only if stream copy fails or produces empty output.
+        ret = await _run_ffmpeg(["-c", "copy"])
+        if ret == 0 and os.path.exists(out_path):
+            merged = await asyncio.to_thread(_read_bytes, out_path)
+            if merged:
+                return merged
+
+        logger.debug(
+            "ffmpeg -c copy concat returned %d; retrying with libmp3lame re-encode",
+            ret,
+        )
+        ret = await _run_ffmpeg(["-c:a", "libmp3lame", "-q:a", "4"])
+        if ret == 0 and os.path.exists(out_path):
+            return await asyncio.to_thread(_read_bytes, out_path)
+        logger.warning("ffmpeg concat failed (ret=%d), falling back to first part", ret)
+        return parts[0]
+    except TimeoutError:
+        logger.warning("ffmpeg concat timed out; falling back to first part")
+        return parts[0]
+    finally:
+        await asyncio.to_thread(shutil.rmtree, tmpdir, True)
+
+
+def _write_bytes(path: str, data: bytes) -> None:
+    with open(path, "wb") as fh:
+        fh.write(data)
+
+
+def _format_ffmpeg_concat_entry(path: str) -> str:
+    """Format a path safely for ffmpeg concat demuxer (POSIX slashes, backslash-escaped quotes)."""
+    posix_path = Path(path).as_posix()
+    if "\n" in posix_path or "\r" in posix_path:
+        raise ValueError("Invalid newline character in concat path")
+    escaped = posix_path.replace("\\", "\\\\").replace("'", "\\'")
+    return f"file '{escaped}'\n"
+
+
+def _write_text(path: str, data: str) -> None:
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(data)
+
+
+def _read_bytes(path: str) -> bytes:
+    with open(path, "rb") as fh:
+        return fh.read()
+
+
+class WorkerPool:
+    def __init__(
+        self,
+        num_workers: int = 5,
+        *,
+        max_queue_size: int = BOT_QUEUE_MAXSIZE,
+        tts_timeout: float = TTS_TIMEOUT_SEC,
+        ffmpeg_timeout: float = FFMPEG_TIMEOUT_SEC,
+        tts_concurrency: int = TTS_CONCURRENCY,
+        ffmpeg_concurrency: int = FFMPEG_CONCURRENCY,
+        memory: ConversationStore | None = None,
+    ):
+        # Weighted Fair PriorityQueue:
+        # 1) Fast text tasks (priority=0) always overtake heavier voice tasks (priority=1).
+        # 2) Within the same priority tier, per-bot virtual finish time (vtime) prevents
+        #    a noisy bot flooding voice tasks from starving other bots, while preserving
+        #    strict FIFO for single-bot traffic via the monotonic sequence tie-breaker.
+        self._queue: asyncio.PriorityQueue[tuple[int, float, int, Task]] = (
+            asyncio.PriorityQueue(maxsize=max_queue_size)
+        )
+        self._enqueue_seq = 0
+        self._vtime_global: dict[int, float] = {0: 0.0, 1: 0.0}
+        self._vtime_by_bot: dict[tuple[int, str], float] = {}
+        self._num_workers = max(1, num_workers)
+        self._workers: list[asyncio.Task] = []
+        self._running = False
+        self._accepting = True
+        self._tts_timeout = tts_timeout
+        self._ffmpeg_timeout = ffmpeg_timeout
+        self._memory = memory or ConversationStore(
+            max_turns=CONVERSATION_MAX_TURNS,
+            ttl_sec=CONVERSATION_TTL_SEC,
+        )
+        # Distributed Redis ZSET lease semaphores with local asyncio.Semaphore fallback.
+        self._tts_semaphore = create_tts_semaphore(
+            TTS_PROVIDER,
+            max_permits=max(1, tts_concurrency),
+            acquire_timeout_sec=tts_timeout,
+        )
+        self._ffmpeg_semaphore = create_ffmpeg_semaphore(
+            max_permits=max(1, ffmpeg_concurrency),
+            acquire_timeout_sec=ffmpeg_timeout,
+        )
+
+    @staticmethod
+    def _memory_key(bot_id: str, chat_id: int) -> int | str:
+        """Keep raw int chat_id for the default bot; namespace additional bots."""
+        return chat_id if (not bot_id or bot_id == "default") else f"{bot_id}:{chat_id}"
+
+    @property
+    def memory(self) -> ConversationStore:
+        return self._memory
+
+    def clear_memory(self, chat_id: int, bot_id: str = "default") -> bool:
+        return self._memory.clear(self._memory_key(bot_id, chat_id))
+
+    def is_ready(self) -> tuple[bool, dict[str, Any]]:
+        """Report worker pool readiness for /ready health probes."""
+        alive_workers = sum(1 for w in self._workers if not w.done())
+        qsize = self._queue.qsize()
+        maxsize = self._queue.maxsize
+        queue_has_space = maxsize <= 0 or qsize < maxsize
+        ready = (
+            self._running and self._accepting and alive_workers > 0 and queue_has_space
+        )
+        return ready, {
+            "running": self._running,
+            "accepting": self._accepting,
+            "alive_workers": alive_workers,
+            "queue_depth": qsize,
+            "queue_maxsize": maxsize,
+        }
+
+    async def _tts_limited(self, text: str) -> bytes:
+        wait_started = time.monotonic()
+        with start_span("worker.tts", attributes={"text_chars": len(text)}) as span:
+            try:
+                async with self._tts_semaphore.acquire(
+                    timeout_sec=self._tts_timeout
+                ) as lease:
+                    span.set_attribute("semaphore_backend", lease.backend)
+                    span.set_attribute(
+                        "semaphore_wait_ms", round(lease.waited_sec * 1000, 2)
+                    )
+                    remaining = max(
+                        0.05, self._tts_timeout - (time.monotonic() - wait_started)
+                    )
+                    return await asyncio.wait_for(tts(text), timeout=remaining)
+            finally:
+                metrics.tts_wait_seconds.observe(
+                    max(0.0, time.monotonic() - wait_started)
+                )
+
+    async def start(self) -> None:
+        self._running = True
+        self._accepting = True
+        metrics.queue_depth.set(self._queue.qsize())
+        self._workers = [
+            asyncio.create_task(self._run(i), name=f"worker-{i}")
+            for i in range(self._num_workers)
+        ]
+        logger.info(
+            "Worker pool started with %d workers (queue_maxsize=%d)",
+            self._num_workers,
+            self._queue.maxsize,
+        )
+
+    async def stop(self, drain_timeout: float = 0.0) -> None:
+        # Stop accepting new items first while workers stay alive to drain queued items.
+        self._accepting = False
+        if drain_timeout > 0 and self._workers:
+            try:
+                await asyncio.wait_for(self._queue.join(), timeout=drain_timeout)
+            except TimeoutError:
+                logger.warning(
+                    "Worker pool drain timed out after %.1fs; cancelling remaining tasks",
+                    drain_timeout,
+                )
+        self._running = False
+        for w in self._workers:
+            w.cancel()
+        if self._workers:
+            await asyncio.gather(*self._workers, return_exceptions=True)
+        metrics.queue_depth.set(self._queue.qsize())
+        logger.info("Worker pool stopped")
+
+    def try_enqueue(self, task: Task) -> None:
+        """Enqueue a task immediately with Weighted Fair Queuing across bots."""
+        if not self._accepting:
+            raise asyncio.QueueFull("Worker pool is shutting down")
+        priority = 1 if task.is_voice else 0
+        bot_id = task.bot_id or "default"
+        weight = max(1, int(task.bot_weight or 1))
+        bot_key = (priority, bot_id)
+        base_vtime = max(
+            self._vtime_by_bot.get(bot_key, 0.0),
+            self._vtime_global.get(priority, 0.0),
+        )
+        finish_vtime = base_vtime + (1.0 / weight)
+        self._vtime_by_bot[bot_key] = finish_vtime
+        if len(self._vtime_by_bot) > 128:
+            # Prune oldest tracked virtual clocks if many transient bot IDs appear
+            for stale_key in list(self._vtime_by_bot.keys())[:-64]:
+                self._vtime_by_bot.pop(stale_key, None)
+        self._enqueue_seq += 1
+        self._queue.put_nowait((priority, finish_vtime, self._enqueue_seq, task))
+        metrics.queue_depth.set(self._queue.qsize())
+
+    async def enqueue(self, task: Task) -> None:
+        """Async compatibility wrapper around :meth:`try_enqueue`."""
+        self.try_enqueue(task)
+
+    async def _run(self, idx: int) -> None:
+        while self._running or (not self._accepting and not self._queue.empty()):
+            try:
+                priority, finish_vtime, _seq, task = await asyncio.wait_for(
+                    self._queue.get(), timeout=0.5
+                )
+            except TimeoutError:
+                if not self._running:
+                    break
+                continue
+            except asyncio.CancelledError:
+                break
+            self._vtime_global[priority] = max(
+                self._vtime_global.get(priority, 0.0), finish_vtime
+            )
+            metrics.queue_depth.set(self._queue.qsize())
+            token = req_id_var.set(task.req_id)
+            try:
+                await self._process(task)
+            except Exception:
+                logger.exception("Worker %d failed processing task", idx)
+                await self._safe_send(
+                    task.bot,
+                    task.chat_id,
+                    "⚠️ 系統忙碌，請稍後再試",
+                    task.reply_to_message_id,
+                )
+            finally:
+                req_id_var.reset(token)
+                self._queue.task_done()
+                metrics.queue_depth.set(self._queue.qsize())
+
+    async def _resolve_voice_text(self, task: Task) -> str | None:
+        """Transcribe voice inside the worker to prevent polling loop blocking."""
+        try:
+            text = await _download_and_transcribe_voice(task.voice)
+        except Exception:
+            logger.exception("Whisper failed inside worker")
+            if task.status_message is not None:
+                try:
+                    await task.status_message.edit_text("❌ 語音轉錄失敗，請稍後再試。")
+                except Exception:
+                    logger.debug("Failed to edit status message", exc_info=True)
+            else:
+                await self._safe_send(
+                    task.bot,
+                    task.chat_id,
+                    "❌ 語音轉錄失敗，請稍後再試。",
+                    task.reply_to_message_id,
+                )
+            return None
+
+        if not text or not text.strip():
+            if task.status_message is not None:
+                try:
+                    await task.status_message.edit_text(
+                        "⚠️ 無法辨識語音內容，請重新錄製。"
+                    )
+                except Exception:
+                    logger.debug("Failed to edit status message", exc_info=True)
+            return None
+
+        if task.status_message is not None:
+            preview = text if len(text) <= 3800 else text[:3800] + "..."
+            try:
+                await task.status_message.edit_text(f"You: {preview}\n\n⏳ Thinking...")
+            except Exception:
+                logger.debug("Failed to edit status message", exc_info=True)
+        return text
+
+    async def _process(self, task: Task) -> None:
+        with start_span(
+            "worker.process",
+            attributes={
+                "bot_id": task.bot_id,
+                "chat_id": task.chat_id,
+                "is_voice": task.is_voice,
+            },
+            parent_trace_id=task.trace_id,
+            parent_span_id=task.parent_span_id,
+        ):
+            try:
+                await self._process_traced(task)
+            finally:
+                metrics.request_duration_seconds.observe(
+                    max(0.0, time.monotonic() - task.created_at)
+                )
+
+    async def _process_traced(self, task: Task) -> None:
+        chat_id = task.chat_id
+        memory_key = self._memory_key(task.bot_id, chat_id)
+        user_text = task.text
+        if task.voice is not None and not user_text:
+            with start_span(
+                "worker.stt", attributes={"bot_id": task.bot_id, "chat_id": chat_id}
+            ):
+                transcribed = await self._resolve_voice_text(task)
+            if transcribed is None:
+                return
+            user_text = transcribed
+
+        stop_event = asyncio.Event()
+        typing_task = asyncio.create_task(_typing_loop(task.bot, chat_id, stop_event))
+        full_text = ""
+        tts_tasks: list[asyncio.Task[bytes]] = []
+
+        try:
+            sent_msg = await task.bot.send_message(
+                chat_id=chat_id,
+                text="⏳ 思考中...",
+                reply_to_message_id=task.reply_to_message_id,
+            )
+            msg_id = sent_msg.message_id
+
+            history = self._memory.get_history(memory_key)
+            pos = 0
+            scan_pos = 0
+            last_edit = time.monotonic()
+            tts_chars = 0
+
+            def _schedule_tts_fragment(raw: str) -> bool:
+                """Enqueue one TTS fragment if within sentence/character caps."""
+                nonlocal tts_chars
+                fragment = raw.strip()
+                if not fragment or not _has_content(fragment):
+                    return True
+                if len(tts_tasks) >= TTS_MAX_SENTENCES:
+                    logger.info(
+                        "Reached TTS_MAX_SENTENCES (%d); skipping remaining audio",
+                        TTS_MAX_SENTENCES,
+                    )
+                    return False
+                remaining_chars = TTS_MAX_CHARS - tts_chars
+                if remaining_chars <= 0:
+                    logger.info(
+                        "Reached TTS_MAX_CHARS (%d); skipping remaining audio",
+                        TTS_MAX_CHARS,
+                    )
+                    return False
+                if len(fragment) > remaining_chars:
+                    fragment = fragment[:remaining_chars]
+                    logger.info(
+                        "Truncated sentence to %d chars (TTS budget limit)",
+                        remaining_chars,
+                    )
+                tts_chars += len(fragment)
+                tts_tasks.append(asyncio.create_task(self._tts_limited(fragment)))
+                return True
+
+            def queue_tts(
+                text_so_far: str, cursor: int, scanned: int
+            ) -> tuple[int, int]:
+                """Queue TTS for complete sentences in O(n), respecting both caps."""
+                cursor, new = _scan_sentences(text_so_far, cursor, scan_from=scanned)
+                for sentence in new:
+                    if not _schedule_tts_fragment(sentence):
+                        break
+                return cursor, len(text_so_far)
+
+            def flush_tts(text_so_far: str, cursor: int) -> tuple[int, int]:
+                """Flush any trailing unpunctuated text within TTS caps."""
+                if cursor < len(text_so_far):
+                    _schedule_tts_fragment(text_so_far[cursor:])
+                end = len(text_so_far)
+                return end, end
+
+            # Phase 1 — streaming (fast, progressive)
+            stream_ok = True
+            with start_span(
+                "worker.llm", attributes={"chat_id": chat_id, "stream": True}
+            ):
+                try:
+                    stream_iter = (
+                        chat_stream(chat_id, user_text, history=history)
+                        if history
+                        else chat_stream(chat_id, user_text)
+                    )
+                    async for token in stream_iter:
+                        full_text += token
+                        if len(full_text) > MAX_RESPONSE_CHARS:
+                            full_text = full_text[:MAX_RESPONSE_CHARS]
+                            logger.warning(
+                                "Response exceeded %d chars; truncating",
+                                MAX_RESPONSE_CHARS,
+                            )
+                            break
+
+                        now = time.monotonic()
+                        if now - last_edit >= STREAM_EDIT_INTERVAL:
+                            last_edit = now
+                            try:
+                                await task.bot.edit_message_text(
+                                    chat_id=chat_id,
+                                    message_id=msg_id,
+                                    text=_truncate(full_text),
+                                )
+                            except Exception as e:  # noqa: BLE001 - edit is cosmetic
+                                logger.debug(
+                                    "edit_message_text during streaming: %s: %s",
+                                    type(e).__name__,
+                                    e,
+                                )
+
+                        if task.is_voice:
+                            pos, scan_pos = queue_tts(full_text, pos, scan_pos)
+
+                    if task.is_voice:
+                        pos, scan_pos = flush_tts(full_text, pos)
+
+                except (httpx.TransportError, httpx.HTTPStatusError):
+                    logger.warning(
+                        "Stream failed for chat %d, falling back to non-streaming",
+                        chat_id,
+                    )
+                    stream_ok = False
+                    if task.is_voice:
+                        pos, scan_pos = flush_tts(full_text, pos)
+
+            # Phase 2 — fallback to non-streaming if stream failed
+            if not stream_ok or not full_text:
+                try:
+                    complete = (
+                        await chat(chat_id, user_text, history=history)
+                        if history
+                        else await chat(chat_id, user_text)
+                    )
+                except Exception:
+                    logger.exception("Non-streaming fallback failed")
+                    complete = None
+
+                if complete:
+                    if len(complete) > MAX_RESPONSE_CHARS:
+                        complete = complete[:MAX_RESPONSE_CHARS]
+                        logger.warning(
+                            "Fallback response exceeded %d chars; truncating",
+                            MAX_RESPONSE_CHARS,
+                        )
+                    for t in tts_tasks:
+                        t.cancel()
+                    await asyncio.gather(*tts_tasks, return_exceptions=True)
+                    tts_tasks = []
+                    tts_chars = 0
+                    pos = 0
+                    scan_pos = 0
+                    full_text = complete
+                    try:
+                        await task.bot.edit_message_text(
+                            chat_id=chat_id,
+                            message_id=msg_id,
+                            text=_truncate(full_text),
+                        )
+                    except Exception as e:  # noqa: BLE001 - edit is cosmetic
+                        logger.debug(
+                            "edit_message_text after non-streaming: %s: %s",
+                            type(e).__name__,
+                            e,
+                        )
+                    if task.is_voice:
+                        pos, scan_pos = queue_tts(full_text, pos, scan_pos)
+                        pos, scan_pos = flush_tts(full_text, pos)
+
+            if not full_text:
+                await task.bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=msg_id,
+                    text="⚠️ 未取得回應，請稍後再試",
+                )
+                return
+
+            self._memory.append_turn(memory_key, user_text, full_text)
+
+            # Phase 3 — voice: collect TTS results and send audio
+            if task.is_voice and tts_tasks:
+                await task.bot.send_chat_action(chat_id=chat_id, action="upload_voice")
+                parts: list[bytes] = []
+                for t in tts_tasks:
+                    try:
+                        parts.append(await t)
+                    except Exception as e:  # noqa: BLE001 - one sentence may fail
+                        logger.warning("TTS task failed: %s: %s", type(e).__name__, e)
+                if parts:
+                    try:
+                        metrics.ffmpeg_queue_length.inc()
+                        try:
+                            with start_span(
+                                "worker.ffmpeg_concat",
+                                attributes={"parts": len(parts)},
+                            ) as ff_span:
+                                ff_started = time.monotonic()
+                                async with self._ffmpeg_semaphore.acquire(
+                                    timeout_sec=self._ffmpeg_timeout
+                                ) as lease:
+                                    ff_span.set_attribute(
+                                        "semaphore_backend", lease.backend
+                                    )
+                                    ff_span.set_attribute(
+                                        "semaphore_wait_ms",
+                                        round(lease.waited_sec * 1000, 2),
+                                    )
+                                    ff_remaining = max(
+                                        0.5,
+                                        self._ffmpeg_timeout
+                                        - (time.monotonic() - ff_started),
+                                    )
+                                    combined = await _concat_mp3(
+                                        parts, timeout=ff_remaining
+                                    )
+                        finally:
+                            metrics.ffmpeg_queue_length.dec()
+                        with start_span(
+                            "worker.send_audio",
+                            attributes={"audio_bytes": len(combined)},
+                        ):
+                            await task.bot.send_audio(
+                                chat_id=chat_id,
+                                audio=io.BytesIO(combined),
+                                filename="reply.mp3",
+                                title="AI Voice Reply",
+                                read_timeout=120,
+                                write_timeout=120,
+                                reply_to_message_id=task.reply_to_message_id,
+                            )
+                    except Exception as e:  # noqa: BLE001 - text still delivered
+                        logger.warning(
+                            "Voice reply failed, delivering text only: %s: %s",
+                            type(e).__name__,
+                            e,
+                        )
+
+            # Phase 4 — final text delivery
+            with start_span("worker.deliver_reply", attributes={"chat_id": chat_id}):
+                await self._deliver_text(task, msg_id, full_text)
+
+        except Exception:
+            logger.exception("Worker failed processing task")
+            if full_text:
+                await self._deliver_text(task, msg_id, full_text)
+            else:
+                await self._safe_send(
+                    task.bot,
+                    chat_id,
+                    "⚠️ 系統忙碌，請稍後再試",
+                    task.reply_to_message_id,
+                )
+        finally:
+            stop_event.set()
+            for t in tts_tasks:
+                if not t.done():
+                    t.cancel()
+            # Await *every* TTS task, including ones that already failed: a finished-with-error
+            # task nobody awaits logs "Task exception was never retrieved".
+            await asyncio.gather(typing_task, *tts_tasks, return_exceptions=True)
+
+    async def _deliver_text(self, task: Task, msg_id: int, text: str) -> None:
+        """Send or update the final text message after streaming completes."""
+        chunks = _split_message(text) or [""]
+        try:
+            await task.bot.edit_message_text(
+                chat_id=task.chat_id,
+                message_id=msg_id,
+                text=chunks[0],
+            )
+        except Exception as e:  # noqa: BLE001 - fall back to a new message
+            logger.debug(
+                "edit_message_text for final text failed: %s: %s", type(e).__name__, e
+            )
+            await task.bot.send_message(
+                chat_id=task.chat_id,
+                text=chunks[0],
+                reply_to_message_id=task.reply_to_message_id,
+            )
+        for chunk in chunks[1:]:
+            try:
+                await task.bot.send_message(
+                    chat_id=task.chat_id,
+                    text=chunk,
+                    reply_to_message_id=task.reply_to_message_id,
+                )
+            except Exception as e:  # noqa: BLE001 - best effort, already logged
+                logger.warning("Failed to send follow-up chunk: %s", e)
+
+    @staticmethod
+    async def _safe_send(
+        bot: Bot, chat_id: int, text: str, reply_to_message_id: int
+    ) -> None:
+        try:
+            await bot.send_message(
+                chat_id=chat_id,
+                text=text,
+                reply_to_message_id=reply_to_message_id,
+            )
+        except Exception as e:  # noqa: BLE001 - nothing else we can do
+            logger.error("Failed to send error message: %s", e)

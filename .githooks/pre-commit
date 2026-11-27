@@ -1,0 +1,77 @@
+#!/bin/sh
+# Pre-commit guardrail: chains Gitleaks (if installed via DeveloperSetting/*)
+# AND a zero-dependency fallback check blocking .env, service accounts, or raw API keys.
+# Auto-enabled by start-win11.ps1 / start-linux.sh via: git config core.hooksPath .githooks
+
+# Ensure macOS Homebrew binaries (e.g. gitleaks) are discoverable from GUI Git clients
+export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+
+STAGED_FILES=$(git diff --cached --name-only --diff-filter=ACM)
+if [ -z "$STAGED_FILES" ]; then
+  exit 0
+fi
+
+BLOCKED=0
+
+# 0. Run Gitleaks if installed (uses repo .gitleaks.toml automatically)
+if command -v gitleaks >/dev/null 2>&1; then
+  if ! gitleaks protect --staged --verbose --redact; then
+    echo "[防呆攔截] Gitleaks 偵測到疑似敏感資料，已阻擋本次 Commit！" >&2
+    BLOCKED=1
+  fi
+fi
+
+# 1. Zero-dependency forbidden secret filename check (line-by-line, safe against spaces/globs)
+check_staged_names() {
+  local_blocked=0
+  while IFS= read -r file; do
+    [ -z "$file" ] && continue
+    case "$file" in
+      .env|.env.*|*/.env|*/.env.*)
+        case "$file" in
+          *.example|*.sample|*.template) ;;
+          *)
+            echo "[防呆攔截] 偵測到敏感環境檔被加入 commit：$file" >&2
+            local_blocked=1
+            ;;
+        esac
+        ;;
+      *firebase-applet-config.json|*firebase-config.json|*service-account*.json|*.pem|*.key)
+        echo "[防呆攔截] 偵測到金鑰設定檔被加入 commit：$file" >&2
+        local_blocked=1
+        ;;
+    esac
+  done
+  return "$local_blocked"
+}
+
+if ! printf '%s\n' "$STAGED_FILES" | check_staged_names; then
+  BLOCKED=1
+fi
+
+# 2. Zero-dependency scan of added lines in staged diff for common API key patterns
+ADDED_LINES=$(git diff --cached -U0 -- . ':(exclude)*.lock' ':(exclude)package-lock.json' ':(exclude)public/*.zip' | grep '^+' | grep -v '^+++')
+
+if printf '%s\n' "$ADDED_LINES" | grep -qE 'AIza[0-9A-Za-z_-]{35}'; then
+  echo "[防呆攔截] 偵測到疑似 Google / Gemini API Key (AIza...) 存在於本次變更中！" >&2
+  BLOCKED=1
+fi
+
+if printf '%s\n' "$ADDED_LINES" | grep -qE '-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----'; then
+  echo "[防呆攔截] 偵測到 Private Key 私鑰區塊存在於本次變更中！" >&2
+  BLOCKED=1
+fi
+
+if printf '%s\n' "$ADDED_LINES" | grep -qE 'ghp_[0-9A-Za-z]{36}|github_pat_[0-9A-Za-z_]{20,}'; then
+  echo "[防呆攔截] 偵測到疑似 GitHub Personal Access Token 存在於本次變更中！" >&2
+  BLOCKED=1
+fi
+
+if [ "$BLOCKED" -ne 0 ]; then
+  echo "" >&2
+  echo "已自動取消此次 git commit 以避免金鑰外洩到 GitHub。" >&2
+  echo "請執行：git rm --cached <檔案>（或 git restore --staged <檔案>）移出暫存區，並確認金鑰只寫在本機 .env 中。" >&2
+  exit 1
+fi
+
+exit 0

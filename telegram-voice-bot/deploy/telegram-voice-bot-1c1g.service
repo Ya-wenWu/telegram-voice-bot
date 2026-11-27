@@ -1,0 +1,51 @@
+[Unit]
+Description=Telegram Voice Bot (Constrained 1 vCPU / 1 GB RAM Single-Bot Mode)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=tgbot
+Group=tgbot
+WorkingDirectory=/opt/telegram-voice-bot
+EnvironmentFile=/opt/telegram-voice-bot/.env
+Environment=DEPLOYMENT_PROFILE=constrained
+Environment=MAX_BOT_INSTANCES=1
+Environment=BOT_WORKERS=1
+Environment=CONCURRENT_UPDATES=1
+Environment=BOT_QUEUE_MAXSIZE=10
+Environment=FFMPEG_CONCURRENCY=1
+Environment=TTS_CONCURRENCY=2
+Environment=REDIS_SEMAPHORE_ENABLED=false
+Environment=STATE_DIR=/var/lib/telegram-voice-bot
+Environment=TMP_DIR=/tmp/telegram-voice-bot
+StateDirectory=telegram-voice-bot
+ExecStart=/opt/telegram-voice-bot/.venv/bin/python /opt/telegram-voice-bot/main.py
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=20
+
+# Strict 1 vCPU / 1 GB RAM hard quotas (leave ~74M headroom for kernel)
+CPUQuota=100%
+MemoryHigh=768M
+MemoryMax=950M
+TasksMax=64
+
+# Delegate logs to systemd-journald
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=telegram-voice-bot-1c1g
+
+# Sandboxing & least privilege
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=multi-user.target

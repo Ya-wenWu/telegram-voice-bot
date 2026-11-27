@@ -1,150 +1,75 @@
-# telegram-voice-bot
+# Web Voice Bot
 
-A low-resource Telegram voice bot (1 vCPU / 1.4 GiB host) with text chat, remote
-Whisper transcription, edge-TTS replies, and daily quota enforcement via Redis.
+ - 免 Telegram 與 BotFather Token——同時支援 **Windows 11** 與 **Linux / macOS** 的全端網頁語音助手，內建完整的 Python 語音管線（`ConversationStore` 多輪記憶、Edge-TTS、可抽換 `TTSProvider`、`ffmpeg -threads 1` 音訊正規化、Redis fail-open 配額保護與動態熱更新設定）。
+ - ![wvb_index_2026-11-25 091842](Pictures/wvb_index_2026-11-25-091842.png)
+---
 
-## Features
+## 快速啟動（3 步驟，內建防呆檢查）
 
-- **Text chat** — replies via OpenCode Zen (DeepSeek) LLM API
-- **Voice messages** — transcribed via Groq `whisper-large-v3-turbo`, then LLM
-  response is synthesized with edge-tts and sent back as MP3 audio
-- **Short sentences spoken** — replies such as "好。" are not dropped by TTS
-- **Daily quotas** — Redis Lua atomic counter with TTL, fail-open, `Asia/Taipei` timezone
-- **Single-worker mode** — `BOT_WORKERS=1`, `CONCURRENT_UPDATES=1` for low-memory hosts
-- **Voice file cap** — `MAX_VOICE_BYTES=10 MB`, downloaded to disk temp dir (not `BytesIO`)
-- **TTS concurrency cap** — max 3 simultaneous edge-tts requests
-- **ffmpeg concat** — re-encodes with `libmp3lame -q:a 4` for reliable MP3 output
-- **Retry/backoff** — 429/5xx retry with `Retry-After` honouring for LLM and transcription
-- **Generic user errors** — internal details never leaked to users
+### 事前準備
+- **Node.js 20+**（https://nodejs.org/）
+- **Python 3.11+**（Windows 安裝時請勾選 `Add python.exe to PATH`）
+- **ffmpeg**（語音錄音轉檔與 MP3 合成需要）：
+  - Windows 11：`winget install Gyan.FFmpeg`（裝完請重開終端機）
+  - Ubuntu / Debian：`sudo apt update && sudo apt install -y ffmpeg python3-venv`
+- **一組免費 Gemini API Key**：https://aistudio.google.com/apikey
 
-## Requirements
+### Windows 11 一鍵啟動
+```powershell
+git clone https://github.com/Ya-wenWu/telegram-voice-bot.git
+cd telegram-voice-bot
+powershell -ExecutionPolicy Bypass -File .\start-win11.ps1
+```
 
-- Python 3.11+
-- `ffmpeg` and `ffprobe` (≥ 5 recommended)
-- Redis (for daily quotas only)
-- A Telegram bot token from [@BotFather](https://t.me/botfather)
-
-## Installation
-
+### Linux / macOS 一鍵啟動
 ```bash
 git clone https://github.com/Ya-wenWu/telegram-voice-bot.git
 cd telegram-voice-bot
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
+chmod +x ./start-linux.sh && ./start-linux.sh
 ```
 
-Copy `.env.example` to `.env` and fill in your values:
+啟動完成後，用瀏覽器開啟 **http://localhost:3000** 即可直接語音與文字對話。
 
-```bash
-cp .env.example .env
-chmod 600 .env
-```
+---
 
-Edit `.env` with at minimum:
-- `TELEGRAM_BOT_TOKEN` — from @BotFather (required; the bot exits without it)
-- `ALLOWED_USER_IDS` — comma-separated Telegram user IDs (empty = deny all)
-- `ZEN_API_KEY` — OpenCode Zen API key (required; the bot exits without it)
-- `WHISPER_API_KEY` — Groq API key (or set `WHISPER_URL` for self-hosted);
-  without either, text chat works but voice transcription fails
+## 內建管理員防呆與安全保護
 
-Redis is optional at runtime: if it is unreachable, quotas are simply not
-enforced (fail-open).
+為了避免使用者下載自架時踩坑或不小心把金鑰推回 GitHub，本專案內建四層防護：
 
-Run:
+1. **啟動腳本隱藏輸入金鑰**：第一次執行 `start-win11.ps1` 或 `./start-linux.sh` 時，若偵測到 `.env` 尚未設定有效 `GEMINI_API_KEY`（包含空值、範例佔位字或誤貼空白），會直接於終端機以**隱藏輸入**引導設定並寫入本機 `.env`（Linux 自動設定 `chmod 600` 僅限本人讀寫），不會留在終端機畫面紀錄中。
+2. **一鍵環境與安全健檢（`npm run doctor`）**：隨時執行 `npm run doctor`，一次檢查 Node.js 版本、Python 3.11+、虛擬環境相依套件、`ffmpeg`、`.env` 金鑰格式、Port 3000 佔用狀況與 Git 追蹤安全（絕不印出金鑰明文）。
+3. **Git Pre-Commit 防洩漏攔截（`.githooks/pre-commit` + `.gitleaks.toml`）**：啟動腳本會自動啟用內建 Git Hook；若已透過 `DeveloperSetting/` 腳本安裝 Gitleaks 會優先串接 `gitleaks protect --staged`，未安裝時仍有零相依備援規則攔截 `.env`、`firebase-applet-config.json`、`*service-account*.json`、私鑰與 `AIza...` 金鑰。
+4. **伺服器與網頁即時診斷**：即使手動執行 `npm run dev` 略過啟動腳本，後端 `/api/bot/status` 仍會即時檢測環境缺漏並在網頁上方顯示明確的修正步驟，不會丟出難懂的錯誤堆疊。
+5. **開發者環境自動化工具（`DeveloperSetting/`）**：提供 Windows（Visual Studio）、Linux 與 macOS 開發機初始化腳本（自動配置 Gitleaks、SonarQube for IDE 與 `npm ci --ignore-scripts` 安全還原）；詳細本機啟動說明另見 `README_LOCAL_RUN.md`。
 
-```bash
-./start.sh
-```
+---
 
-## Configuration
+## Prompt Injection 與 AI 安全防護
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `TELEGRAM_BOT_TOKEN` | (required) | Telegram bot token |
-| `ALLOWED_USER_IDS` | (empty) | Comma-separated allowed user IDs; empty = deny all |
-| `ZEN_API_BASE` | `https://opencode.ai/inference/openai/v1` | LLM API base URL |
-| `ZEN_MODEL` | `deepseek-v4.1-flash-free` | LLM model name |
-| `ZEN_API_KEY` | (required) | Zen API key |
-| `WHISPER_API_BASE` | `https://api.groq.com/openai/v1` | Whisper API base URL |
-| `WHISPER_API_KEY` | (required) | Whisper API key (Groq) |
-| `WHISPER_MODEL` | `whisper-large-v3-turbo` | Whisper model |
-| `WHISPER_LANGUAGE` | `zh` | Transcription language hint |
-| `WHISPER_URL` | (empty) | Self-hosted Whisper URL (overrides Groq) |
-| `TTS_VOICE` | `zh-CN-XiaoxiaoNeural` | edge-tts voice for spoken replies |
-| `REDIS_URL` | `redis://127.0.0.1:6379/0` | Redis for daily quotas |
-| `DAILY_REQUEST_LIMIT` | `50` | Requests per user per day |
-| `TIMEZONE` | `Asia/Taipei` | Timezone for daily quota reset |
-| `MAX_VOICE_BYTES` | `10485760` | Max voice message size (10 MB) |
-| `TMP_DIR` | `~/.cache/telegram-voice-bot/tmp` | Temp directory for voice/TTS files |
-| `BOT_WORKERS` | `1` | Worker pool size (keep 1 on low RAM) |
-| `CONCURRENT_UPDATES` | `1` | PTB concurrent updates (keep 1 on low RAM) |
+本專案內建多層 Prompt Injection 防線（同時涵蓋文字輸入與語音辨識後的轉錄內容）：
 
-## Architecture
+1. **架構隔離（最小權限）**：AI 模型僅負責純文字回覆，**未掛載任何檔案讀寫、Shell 執行或讀取環境變數工具**，系統提示詞中亦不包含任何 API 金鑰，從架構層阻斷 RCE 與金鑰外洩。
+2. **輸入淨化與預篩攔截（`promptGuard.ts`）**：自動剝除零寬／雙向隱藏字元、限制單則訊息長度（防 Token 轟炸），並在送交模型前攔截指令覆寫、越獄模式、系統提示詞套取、金鑰套取與偽造 `[SYSTEM]` 角色標籤；被攔截的攻擊**不耗費 API 額度、也不寫入多輪記憶**（防記憶污染）。
+3. **語音防間接注入（Audio STT Lock）**：語音轉文字階段鎖定獨立 `STT_SYSTEM_INSTRUCTION` 僅做逐字轉錄、不執行語音中的指令，且轉錄文字同樣經過 Prompt Injection 偵測。
+4. **不可信資料邊界與輸出遮罩**：所有使用者訊息以 `<user_message>...</user_message>` 隔離並跳脫閉合標籤；模型輸出回傳前再經敏感金鑰遮罩與長度上限檢查。
+5. **本機綁定、速率限制與端點保護**：本機啟動預設僅監聽 `127.0.0.1`；除 `/health`、`/ready` 外，所有路由（`/api/*`、`/metrics`、原始碼 ZIP）對非本機連線（含經反向代理轉入、雲端環境）都要求 `WEB_API_TOKEN`，細節見 [規格文件](telegram-voice-bot/Spec_bot_management_web.md)；同時內建每 IP 滑動視窗限流（20 次／分鐘）與 800ms POST 防抖，對外公開部署亦可設定 `ADMIN_API_TOKEN` 鎖定動態設定與測試端點。
 
-```
-main.py
-  ├── post_init → WorkerPool (1 worker, TTS semaphore=3)
-  ├── post_stop → close clients + release lock
-  └── run_polling (concurrent_updates=1)
+---
 
-bot/handlers.py
-  ├── start          — /command handler
-  ├── handle_text    — text messages → WorkerPool
-  └── handle_voice   — voice → download → Whisper → WorkerPool
+## 常用指令
 
-bot/worker.py
-  ├── Phase 1: LLM stream (SSE) → partial text + TTS sentence queueing
-  ├── Phase 2: fallback to non-streaming chat() on stream failure
-  └── Phase 3/4: TTS concat (ffmpeg) + final text delivery
+| 指令 | 說明 |
+| :--- | :--- |
+| `npm run doctor` | 執行跨平台環境與安全防呆健檢 |
+| `npm run dev` | 啟動開發伺服器（預設 `http://localhost:3000`） |
+| `npm run build` | 編譯前端正式版輸出至 `dist/` |
+| `npm run lint` | 執行 TypeScript 型別檢查 |
+| `npm run clean` | 跨平台清理 `dist/` 編譯快取 |
 
-bot/opencode_client.py
-  ├── chat()         — non-streaming LLM with retry
-  ├── chat_stream()  — SSE streaming, propagates transport errors
-  └── tts()          — edge-tts synthesis
+---
 
-bot/whisper.py
-  └── transcribe()   — Groq Whisper with file streaming + retry
+## 雲端部署提醒
 
-bot/redis_client.py
-  └── check_daily_quota() — Lua INCR + EXPIRE, fail-open
-
-bot/retry.py
-  └── request_with_retry() — 429/5xx backoff, Retry-After support
-```
-
-## Security
-
-- `.env` is never committed; keep permissions `600`
-- API keys are redacted from logs via `TokenFilter`
-- Allowlist defaults to deny-all
-- Voice files capped at 10 MB to prevent abuse
-- Redis quota failures fail-open (bot stays up, but no quota enforcement during outage)
-
-## Development
-
-```bash
-# Install dev tools (pytest, ruff, mypy)
-source .venv/bin/activate
-pip install -r requirements-dev.txt
-
-# Run tests
-pytest
-
-# Lint
-ruff check .
-
-# Format check
-ruff format --check .
-```
-
-## Deployment
-
-For production on a 1 vCPU / 1.4 GiB host, consider:
-- `systemd --user` unit with `MemoryMax=700M`
-- Log rotation via `logrotate`
-- Redis with memory limit (64 MB recommended)
-
-## License
-
-MIT
+- 本機自架時，API Key 存放於受 `.gitignore` 保護的本機 `.env`。
+- 若要部署至雲端（例如 Cloud Run、Render、Fly.io 或 GitHub Actions），請改用平台原生的 **Secrets / Secret Manager** 注入 `GEMINI_API_KEY`，切勿將 `.env` 打包進映像檔或提交至儲存庫。
+- 雲端部署**必須**同時以 Secrets 設定 `WEB_API_TOKEN`（建議 `openssl rand -hex 32`）；未設定時，除 `/health`、`/ready` 外的路由都會回 403。網頁會在需要時跳出視窗請你輸入 token。

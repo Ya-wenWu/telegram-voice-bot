@@ -1,0 +1,6 @@
+{
+  "name": "RepoFetch",
+  "description": "Fetch, inspect, and download public GitHub repository structures and files directly in your browser.",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

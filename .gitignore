@@ -1,37 +1,31 @@
-
-# Build
-# Environment
-# IDE
-# OS
-# Python
-# Testing
-*.egg
-*.egg-info/
-*.log
-*.mp3
-*.ogg
-*.py[cod]
-*.pyc
-*.swo
-*.swp
-*.tar.gz
-*.whl
-*~
-.DS_Store
-.coverage
-.coverage.*
-.env
-.env.*.local
-.env.local
-.idea/
-.pytest_cache/
-.venv/
-.vscode/
-Thumbs.db
-__pycache__/
+node_modules/
 build/
 dist/
-htmlcov/
-tests/__pycache__/
-venv/
+coverage/
+.coverage
+.DS_Store
+*.log
+.env*
+!.env.example
+firebase-applet-config.json
+firebase-config.json
+*service-account*.json
+.venv/
+telegram-voice-bot/.venv/
+
 /.vs
+# Python 編譯快取
+__pycache__/
+*.py[cod]
+
+# 本機對話記憶與資料庫檔案（避免私人對話內容外洩）
+*.db
+*.sqlite
+*.sqlite3
+conversations.json
+chat_history*.json
+
+# 本機測試生成的壓縮檔
+*.zip
+/public/rebased-on-c6a4016.patch
+/developer_deployment_guide.md
