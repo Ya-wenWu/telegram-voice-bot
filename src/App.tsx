@@ -12,6 +12,7 @@ import {
   Trash2,
   X,
 } from 'lucide-react';
+import { ApiTokenPrompt } from './components/ApiTokenPrompt';
 import { BotLiveConsole } from './components/BotLiveConsole';
 import { CompliancePanel } from './components/CompliancePanel';
 import { EmailDeliveryPanel } from './components/EmailDeliveryPanel';
@@ -543,6 +544,7 @@ export default function App() {
 
   return (
     <div className="min-h-screen flex flex-col bg-[#F8FAFC] text-[#0F172A]">
+      <ApiTokenPrompt />
       <TopBar
         activeTab={activeTab}
         onSelectTab={setActiveTab}
