@@ -37,6 +37,10 @@ export function hashBinding(value: string): string {
  * BOT_GUARD_SECRET, a fresh 96-bit CSPRNG IV, and IP-bound Additional Authenticated Data (AAD).
  * Format: v2.<iv_b64url>.<ciphertext_b64url>.<authTag_b64url>
  */
+// Full 128-bit GCM tag. Passed to Cipheriv/Decipheriv so Node itself rejects truncated tags
+// (without it Node accepts 4/8/12-byte tags), in addition to the explicit length check below.
+const GCM_TAG_BYTES = 16;
+
 export function encryptBotGuardToken(
   scope: BotGuardTokenScope,
   ip: string,
@@ -59,7 +63,7 @@ export function encryptBotGuardToken(
     ua: uaHash,
   });
 
-  const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
+  const cipher = crypto.createCipheriv('aes-256-gcm', key, iv, { authTagLength: GCM_TAG_BYTES });
   cipher.setAAD(aad);
   const encrypted = Buffer.concat([cipher.update(payload, 'utf-8'), cipher.final()]);
   const authTag = cipher.getAuthTag();
@@ -93,13 +97,13 @@ export function verifyBotGuardToken(
       const iv = Buffer.from(ivB64, 'base64url');
       const ct = Buffer.from(ctB64, 'base64url');
       const authTag = Buffer.from(tagB64, 'base64url');
-      if (iv.length !== 12 || authTag.length !== 16 || ct.length === 0) {
+      if (iv.length !== 12 || authTag.length !== GCM_TAG_BYTES || ct.length === 0) {
         return { valid: false, reason: 'malformed_encrypted_token' };
       }
 
       const ipHash = hashBinding(ip);
       const aad = Buffer.from(`v2|${ipHash}`, 'utf-8');
-      const decipher = crypto.createDecipheriv('aes-256-gcm', key, iv);
+      const decipher = crypto.createDecipheriv('aes-256-gcm', key, iv, { authTagLength: GCM_TAG_BYTES });
       decipher.setAAD(aad);
       decipher.setAuthTag(authTag);
 
