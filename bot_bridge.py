@@ -62,14 +62,20 @@ def _resolve_state_file() -> Path:
     if sys.platform.startswith("win"):
         local_app_data = os.environ.get("LOCALAPPDATA")
         if local_app_data:
-            candidates.append(Path(local_app_data) / "web-voice-bot" / "live-state.json")
+            candidates.append(
+                Path(local_app_data) / "web-voice-bot" / "live-state.json"
+            )
     else:
         xdg_state = os.environ.get("XDG_STATE_HOME")
         if xdg_state:
             candidates.append(Path(xdg_state) / "web-voice-bot" / "live-state.json")
-        candidates.append(Path.home() / ".local" / "state" / "web-voice-bot" / "live-state.json")
+        candidates.append(
+            Path.home() / ".local" / "state" / "web-voice-bot" / "live-state.json"
+        )
 
-    candidates.append(Path(tempfile.gettempdir()) / "telegram-voice-bot-live-state.json")
+    candidates.append(
+        Path(tempfile.gettempdir()) / "telegram-voice-bot-live-state.json"
+    )
 
     for candidate in candidates:
         try:
@@ -126,7 +132,9 @@ except ImportError:  # pragma: no cover - bare Python fallback
         for idx in range(start, len(text)):
             if text[idx] in _FALLBACK_SENTENCE_ENDS:
                 seg = text[pos : idx + 1].strip()
-                if seg and any(ch.isalnum() or "\u4e00" <= ch <= "\u9fff" for ch in seg):
+                if seg and any(
+                    ch.isalnum() or "\u4e00" <= ch <= "\u9fff" for ch in seg
+                ):
                     sentences.append(seg)
                 pos = idx + 1
         return pos, sentences
@@ -253,7 +261,9 @@ def current_day_key(override: str | None = None) -> str:
         try:
             return datetime.now(ZoneInfo(tz_name)).strftime("%Y-%m-%d")
         except Exception:  # noqa: BLE001
-            logger.debug("Invalid timezone %s, falling back to local UTC offset", tz_name)
+            logger.debug(
+                "Invalid timezone %s, falling back to local UTC offset", tz_name
+            )
     return datetime.now(UTC).astimezone().strftime("%Y-%m-%d")
 
 
@@ -291,7 +301,8 @@ def _enforce_daily_retention(state: dict, today_key: str) -> bool:
     turns_map: dict[str, list[dict]] = state.setdefault("turns", {})
 
     stale_chat_ids = [
-        cid for cid in set(list(chats.keys()) + list(turns_map.keys()))
+        cid
+        for cid in set(list(chats.keys()) + list(turns_map.keys()))
         if chat_days.get(cid) and chat_days.get(cid) != today_key
     ]
     for cid in stale_chat_ids:
@@ -311,8 +322,7 @@ def _enforce_daily_retention(state: dict, today_key: str) -> bool:
 
     for cid, turn_list in list(turns_map.items()):
         same_day = [
-            t for t in turn_list
-            if not t.get("dayKey") or t.get("dayKey") == today_key
+            t for t in turn_list if not t.get("dayKey") or t.get("dayKey") == today_key
         ]
         if len(same_day) > MAX_DAILY_ROUND_TRIPS:
             same_day = same_day[-MAX_DAILY_ROUND_TRIPS:]
@@ -342,8 +352,12 @@ def load_state(day_key: str | None = None) -> dict:
                 if _enforce_daily_retention(state, today):
                     _write_state_atomic(state)
                 return state
-            except Exception: 
-                logger.debug("Failed to load state file %s; initializing fresh state", STATE_FILE, exc_info=True)
+            except Exception:
+                logger.debug(
+                    "Failed to load state file %s; initializing fresh state",
+                    STATE_FILE,
+                    exc_info=True,
+                )
     return {
         "schema_version": STATE_SCHEMA_VERSION,
         "config": dict(DEFAULT_CONFIG),
@@ -542,7 +556,7 @@ def _read_git_status_sync() -> tuple[str, str, list[str]]:
         stderr=subprocess.DEVNULL,
     ).strip()
     git_log = (
-        subprocess.check_output(
+        subprocess.check_output(  # nosec B603 B607 - fixed argv, no user input
             ["git", "-C", str(BOT_REPO), "log", "main..HEAD", "--oneline"],
             text=True,
             encoding="utf-8",
@@ -562,8 +576,10 @@ async def cmd_status() -> dict:
     git_log: list[str] = []
     if (BOT_REPO / ".git").exists():
         try:
-            git_branch, git_commit, git_log = await asyncio.to_thread(_read_git_status_sync)
-        except Exception: 
+            git_branch, git_commit, git_log = await asyncio.to_thread(
+                _read_git_status_sync
+            )
+        except Exception:
             logger.debug("Failed to read git metadata from %s", BOT_REPO, exc_info=True)
 
     t0 = time.monotonic()
@@ -612,7 +628,10 @@ def cmd_manage_bots(payload: dict) -> dict:
         }
 
     if action == "add":
-        if ACTIVE_PROFILE.mode == "constrained_1c1g" or len(bots) >= ACTIVE_PROFILE.max_bots:
+        if (
+            ACTIVE_PROFILE.mode == "constrained_1c1g"
+            or len(bots) >= ACTIVE_PROFILE.max_bots
+        ):
             return {
                 "ok": False,
                 "error": (
@@ -729,7 +748,9 @@ def cmd_sync_history(payload: dict) -> dict:
                 "reqId": str(item.get("reqId") or "restored"),
                 "elapsedMs": float(item.get("elapsedMs") or 0),
                 "dayKey": day_key,
-                "createdAt": str(item.get("createdAt") or datetime.now(UTC).isoformat()),
+                "createdAt": str(
+                    item.get("createdAt") or datetime.now(UTC).isoformat()
+                ),
             }
         )
 
@@ -1023,7 +1044,9 @@ async def cmd_finalize(payload: dict) -> dict:
         log.info(
             "Voice STT transcription completed in %.1fms (%d chars)", stt_ms, len(text)
         )
-    log.info("LLM reply generated in %.1fms (bot=%s, session token redacted)", llm_ms, bot_id)
+    log.info(
+        "LLM reply generated in %.1fms (bot=%s, session token redacted)", llm_ms, bot_id
+    )
 
     # Save turn via real ConversationStore (Issue #26) + Same-Day <= 5 round-trip retention
     today_key = current_day_key(payload.get("dayKey"))
@@ -1040,7 +1063,8 @@ async def cmd_finalize(payload: dict) -> dict:
 
     int_chat_id = int(chat_id) if str(chat_id).isdigit() else 123456
     existing_turns = [
-        t for t in state["turns"].get(storage_key, [])
+        t
+        for t in state["turns"].get(storage_key, [])
         if not t.get("dayKey") or t.get("dayKey") == today_key
     ]
     existing_turns.append(
@@ -1215,7 +1239,15 @@ async def main() -> None:
 
     cmd = sys.argv[1]
     payload: dict = {}
-    if cmd in ("prepare", "finalize", "check_access", "config", "history", "sync_history", "bots"):
+    if cmd in (
+        "prepare",
+        "finalize",
+        "check_access",
+        "config",
+        "history",
+        "sync_history",
+        "bots",
+    ):
         raw_input = sys.stdin.read().strip()
         if raw_input:
             payload = json.loads(raw_input)
