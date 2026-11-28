@@ -47,12 +47,10 @@
   }
 
   *, *::before, *::after {
-    /* stylelint-disable declaration-no-important -- prefers-reduced-motion must override every component */
-    animation-duration: 0.01ms !important;
-    animation-iteration-count: 1 !important;
-    transition-duration: 0.01ms !important;
-    scroll-behavior: auto !important;
-    /* stylelint-enable declaration-no-important */
+    animation-duration: 0.01ms;
+    animation-iteration-count: 1;
+    transition-duration: 0.01ms;
+    scroll-behavior: auto;
   }
 }
 
