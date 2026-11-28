@@ -29,7 +29,7 @@ jobs:
           persist-credentials: false
 
       # pinned 2026-03-25，等同原 @latest；dev 分支無 github/action.yml
-      - uses: anomalyco/opencode/github@47734e08968b30cc22a0bffb6d9feeed76ad4aa743213a12122040392d09a057 # 或換成該 tag 對應的最新 Commit SHA
+      - uses: anomalyco/opencode/github@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # 或換成該 tag 對應的最新 Commit SHA
         timeout-minutes: 10
         env:
           OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
