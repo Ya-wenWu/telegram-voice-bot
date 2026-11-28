@@ -29,9 +29,7 @@ jobs:
           persist-credentials: false
 
       # pinned 2026-03-25，等同原 @latest；dev 分支無 github/action.yml
-      - uses: anomalyco/opencode/github@77fc88c8ade8e5a620ebbe1197f3a572d29ae91a
-        # Composite action (install + run opencode); a hang here fails this step fast
-        # instead of consuming the whole job budget. Normal runs take 1-4 min.
+      - uses: anomalyco/opencode/github@47734e08968b30cc22a0bffb6d9feeed76ad4aa743213a12122040392d09a057 # 或換成該 tag 對應的最新 Commit SHA
         timeout-minutes: 10
         env:
           OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
